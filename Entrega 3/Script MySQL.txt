@@ -1,0 +1,2484 @@
+-- =====================================================================
+--  PROYECTO INGENIERÍA DE DATOS - EFICAZ FUMIGACIONES (VERSIÓN CORREGIDA 2)
+--  Integrantes: Isabella Galarza y Amelia Joya
+--
+--  Correcciones de la profesora:
+--   1. Se agrega la tabla Usuarios (reemplaza los campos de texto usuarioResponsable*)
+--   2. Se eliminan las relaciones cíclicas del modelo
+--   3. CitaFumigacion: se agregan campos y se une con Clientes (y con Usuarios)
+--   4. Se agregan tablas de auditoría
+--
+--  Ajustes de esta versión (cierre de requisitos funcionales pendientes):
+--   - Tabla Propiedad: un cliente puede tener varios inmuebles (RQF 004-006).
+--     La cita se agenda sobre una propiedad, y por ella se llega al cliente
+--     (Cita -> Propiedad -> Cliente), así el modelo sigue sin ciclos.
+--   - Restricciones CHECK en estados, tipos de solicitud, tipos de propiedad,
+--     correo y teléfonos. Correo del cliente único (acceso sin contraseña).
+--   - Proveedor con razón social. Catálogo por proveedor como vista.
+--   - Validación de cruces por rango horario, reprogramación de citas,
+--     control de cambios de estado y certificado automático.
+--   - Reportes: certificados por vencer, ganancia neta, ranking y autonomía.
+--
+--  Modelo sin ciclos (cada línea = una FK; el grafo queda como un árbol):
+--     Clientes ── Propiedad ── CitaFumigacion ── Usuarios
+--     CitaFumigacion ── VisitaCotizacion
+--     CitaFumigacion ── ServicioDirecto ── Plaga ── InsumoQuimico
+--     ServicioDirecto ── CertificadoFumigacion
+--     InsumoQuimico ── AjusteInventario
+--     InsumoQuimico ── DetalleOrdenCompra ── OrdenCompra ── Proveedor
+--     Usuarios ── Auditoria* (4 tablas hoja; el idRegistro NO es FK, así
+--                            el historial sobrevive aunque se borre el dato)
+-- =====================================================================
+
+DROP DATABASE IF EXISTS eficaz_fumigaciones;
+CREATE DATABASE eficaz_fumigaciones;
+USE eficaz_fumigaciones;
+
+-- ---------------------------------------------------------------------
+-- Usuarios
+-- ---------------------------------------------------------------------
+create table Usuarios (
+    idUsuario int auto_increment primary key,
+    nombreUsuario varchar(100) not null,
+    correoUsuario varchar(100) not null unique,
+    rolUsuario varchar(30) not null default 'Técnico'
+        check (rolUsuario in ('Sistema','Administrador','Técnico','Inventario','Compras')),
+    estadoUsuario varchar(20) not null default 'Activo'
+        check (estadoUsuario in ('Activo','Inactivo')),
+    fechaCreacion datetime not null default current_timestamp
+);
+
+-- Clientes: se agrega teléfono fijo (opcional), el correo pasa a ser único
+-- (sirve para el acceso sin contraseña) y se validan formatos.
+create table Clientes (
+    idCliente int auto_increment primary key,
+    tipoDocumento varchar(20) not null
+        check (tipoDocumento in ('CC','CE','NIT','PAS')),
+    numDocumento varchar(20) not null unique,
+    nombreCliente varchar(100) not null,
+    celularCliente varchar(20) not null
+        check (celularCliente regexp '^[0-9]{7,15}$'),
+    telefonoCliente varchar(20)
+        check (telefonoCliente is null or telefonoCliente regexp '^[0-9]{7,15}$'),
+    correoCliente varchar(100) not null unique
+        check (correoCliente like '%_@_%._%'),
+    estadoCliente varchar(20) not null default 'Activo'
+        check (estadoCliente in ('Activo','Inactivo'))
+);
+create index idx_clientes_nombre on Clientes(nombreCliente);
+create index idx_clientes_celular on Clientes(celularCliente);
+
+-- TABLA NUEVA: Propiedad (varios inmuebles por cliente)
+-- areaM2 puede quedar vacía cuando el cliente no conoce los metros
+-- (en ese caso se agenda una visita de cotización para medir).
+create table Propiedad (
+    idPropiedad int auto_increment primary key,
+    tipoPropiedad varchar(50) not null
+        check (tipoPropiedad in ('Casa','Apartamento','Local Comercial','Oficina','Bodega',
+                                 'Hotel','Restaurante','Institución Educativa')),
+    direccionPropiedad varchar(150) not null,
+    areaM2 decimal(10,2) check (areaM2 is null or areaM2 > 0),
+    estadoPropiedad varchar(20) not null default 'Activa'
+        check (estadoPropiedad in ('Activa','Inactiva')),
+    idCliente int not null,
+    foreign key (idCliente) references Clientes(idCliente)
+);
+
+-- CitaFumigacion: se agenda sobre una propiedad (de ahí sale el cliente) y
+-- con un técnico (Usuarios).
+create table CitaFumigacion (
+    idCita int auto_increment primary key,
+    fechaHora datetime not null,
+    estadoCita varchar(20) not null default 'Pendiente'
+        check (estadoCita in ('Pendiente','En Camino','Realizado','Cancelado')),
+    tipoSolicitud varchar(50) not null
+        check (tipoSolicitud in ('Visita Cotización','Servicio Directo')),
+    duracionEstimadaMin int not null default 60 check (duracionEstimadaMin > 0),
+    observaciones varchar(255),
+    fechaCreacion datetime not null default current_timestamp,
+    idPropiedad int not null,
+    idUsuario int not null,
+    foreign key (idPropiedad) references Propiedad(idPropiedad),
+    foreign key (idUsuario) references Usuarios(idUsuario)
+);
+
+-- VisitaCotizacion: nace en $0 y 'Por inspeccionar'; el área medida y el
+-- valor se llenan después de la inspección (sp_CotizarVisita).
+create table VisitaCotizacion (
+    idVisitaCotizacion int auto_increment primary key,
+    valorServicio decimal(10,2) not null default 0.00 check (valorServicio >= 0),
+    areaMedidaM2 decimal(10,2) check (areaMedidaM2 is null or areaMedidaM2 > 0),
+    estadoCotizacion varchar(20) not null default 'Por inspeccionar'
+        check (estadoCotizacion in ('Por inspeccionar','Cotizada')),
+    observacionInspeccion varchar(255),
+    idCita int not null unique,
+    foreign key (idCita) references CitaFumigacion(idCita) on delete cascade
+);
+
+create table InsumoQuimico (
+    idInsumoQuimico int auto_increment primary key,
+    nombreInsumo varchar(100) not null unique,
+    unidadMedida varchar(20) not null,
+    stockActual decimal(10,2) not null check (stockActual >= 0),
+    stockMinimo decimal(10,2) not null check (stockMinimo >= 0),
+    precioListaActual decimal(10,2) not null check (precioListaActual > 0),
+    estadoInsumo varchar(20) not null default 'Disponible'
+);
+
+create table Plaga (
+    idPlaga int auto_increment primary key,
+    nombrePlaga varchar(100) not null unique,
+    tarifaPorM2 decimal(10,2) not null check (tarifaPorM2 > 0),
+    dosisEstandarPorM2 decimal(10,2) not null check (dosisEstandarPorM2 > 0),
+    idInsumoQuimico int not null,
+    foreign key (idInsumoQuimico) references InsumoQuimico(idInsumoQuimico)
+);
+
+-- ServicioDirecto: guarda también el área con la que se calculó el cobro
+-- (costo y dosis quedan congelados aunque cambie la tarifa de la plaga).
+create table ServicioDirecto (
+    idServicio int auto_increment primary key,
+    costoTotal decimal(10,2) not null check (costoTotal >= 0),
+    dosisInsumo decimal(10,2) not null check (dosisInsumo >= 0),
+    areaM2 decimal(10,2) not null check (areaM2 > 0),
+    estadoServicio boolean not null default true,
+    fechaTransaccion datetime not null default current_timestamp,
+    detalleOperacion varchar(255),
+    idCita int not null unique,                  -- una cita genera un solo servicio
+    idPlaga int not null,
+    foreign key (idCita) references CitaFumigacion(idCita),
+    foreign key (idPlaga) references Plaga(idPlaga)
+);
+
+create table CertificadoFumigacion (
+    idCertificado int auto_increment primary key,
+    fechaEmision date not null,
+    fechaVencimiento date not null,
+    tokenEnlace varchar(30) not null unique check (char_length(tokenEnlace) = 30),
+    estadoVigencia varchar(20) not null default 'Vigente'
+        check (estadoVigencia in ('Vigente','Vencido')),
+    idServicio int not null,
+    foreign key (idServicio) references ServicioDirecto(idServicio)
+);
+
+create table AjusteInventario (
+    idAjuste int auto_increment primary key,
+    fechaAjuste date not null,
+    tipoAjuste varchar(50) not null
+        check (tipoAjuste in ('Entrada','Compra Recibida','Salida','Consumo Servicio','Merma')),
+    cantidad decimal(10,2) not null check (cantidad > 0),
+    justificacion varchar(255) not null check (char_length(trim(justificacion)) > 0),
+    fechaTransaccionAjuste datetime not null default current_timestamp,
+    detalleAjuste varchar(255),
+    idInsumoQuimico int not null,
+    foreign key (idInsumoQuimico) references InsumoQuimico(idInsumoQuimico)
+);
+
+-- Proveedor: se agrega la razón social
+create table Proveedor (
+    idProveedor int auto_increment primary key,
+    nit varchar(20) not null unique,
+    razonSocial varchar(100) not null,
+    telefonoProveedor varchar(20) not null,
+    correoProveedor varchar(100) not null,
+    ciudadProveedor varchar(50) not null,
+    estadoProveedor varchar(20) not null default 'Activo'
+        check (estadoProveedor in ('Activo','Inactivo'))
+);
+
+create table OrdenCompra (
+    idCompra int auto_increment primary key,
+    fechaCompra date not null,
+    valorTotal decimal(10,2) not null default 0.00 check (valorTotal >= 0),
+    estadoCompra varchar(20) not null default 'Pendiente'
+        check (estadoCompra in ('Pendiente','Recibida','Cancelada')),
+    fechaTransaccionCompra datetime not null default current_timestamp,
+    detalleCompra varchar(255),
+    idProveedor int not null,
+    foreign key (idProveedor) references Proveedor(idProveedor)
+);
+
+create table DetalleOrdenCompra (
+    idDetalle int auto_increment primary key,
+    cantidad decimal(10,2) not null check (cantidad > 0),
+    precioUnitario decimal(10,2) not null check (precioUnitario > 0),
+    idCompra int not null,
+    idInsumoQuimico int not null,
+    unique (idCompra, idInsumoQuimico),
+    foreign key (idCompra) references OrdenCompra(idCompra) on delete cascade,
+    foreign key (idInsumoQuimico) references InsumoQuimico(idInsumoQuimico)
+);
+
+-- ---------------------------------------------------------------------
+-- TABLAS DE AUDITORÍA (hojas del modelo: solo apuntan a Usuarios)
+-- idRegistro guarda el id del dato auditado SIN foreign key a propósito.
+-- ---------------------------------------------------------------------
+create table AuditoriaClientes (
+    idAuditoria int auto_increment primary key,
+    idRegistro int not null,
+    accion varchar(20) not null,
+    valorAnterior varchar(500),
+    valorNuevo varchar(500),
+    fechaEvento datetime not null default current_timestamp,
+    idUsuario int not null,
+    foreign key (idUsuario) references Usuarios(idUsuario)
+);
+
+create table AuditoriaInventario (
+    idAuditoria int auto_increment primary key,
+    idRegistro int not null,
+    accion varchar(20) not null,
+    valorAnterior varchar(500),
+    valorNuevo varchar(500),
+    fechaEvento datetime not null default current_timestamp,
+    idUsuario int not null,
+    foreign key (idUsuario) references Usuarios(idUsuario)
+);
+
+create table AuditoriaServicios (
+    idAuditoria int auto_increment primary key,
+    idRegistro int not null,
+    accion varchar(20) not null,
+    valorAnterior varchar(500),
+    valorNuevo varchar(500),
+    fechaEvento datetime not null default current_timestamp,
+    idUsuario int not null,
+    foreign key (idUsuario) references Usuarios(idUsuario)
+);
+
+create table AuditoriaCompras (
+    idAuditoria int auto_increment primary key,
+    idRegistro int not null,
+    accion varchar(20) not null,
+    valorAnterior varchar(500),
+    valorNuevo varchar(500),
+    fechaEvento datetime not null default current_timestamp,
+    idUsuario int not null,
+    foreign key (idUsuario) references Usuarios(idUsuario)
+);
+
+-- =====================================================================
+--  INSERCIÓN DE DATOS
+-- =====================================================================
+
+insert into Usuarios (nombreUsuario, correoUsuario, rolUsuario, estadoUsuario) values
+('Sistema Automático', 'sistema@eficaz.com', 'Sistema', 'Activo'),
+('Camilo Forero', 'camilo.forero@eficaz.com', 'Técnico', 'Activo'),
+('Administrador General', 'admin@eficaz.com', 'Administrador', 'Activo'),
+('Responsable de Inventario', 'inventario@eficaz.com', 'Inventario', 'Activo'),
+('Responsable de Compras', 'compras@eficaz.com', 'Compras', 'Activo'),
+('Laura Jiménez', 'laura.jimenez@eficaz.com', 'Técnico', 'Activo');
+
+insert into Clientes (tipoDocumento, numDocumento, nombreCliente, celularCliente, correoCliente, estadoCliente) values
+('CC', '1018400111', 'Carlos Mendoza', '3101234567', 'carlos.mendoza@gmail.com', 'Activo'),
+('NIT', '900123456-1', 'Restaurante El Sabor', '3159876543', 'contacto@elsabor.com', 'Activo'),
+('CC', '52890123', 'Martha Gómez', '3004567890', 'martha.gomez@gmail.com', 'Activo'),
+('CC', '1020789456', 'Andrés Rocha', '3123456789', 'andres.rocha@gmail.com', 'Activo'),
+('NIT', '800555444-2', 'Panadería Central', '3186549870', 'administracion@pancentral.com', 'Activo'),
+('CC', '1032456789', 'Luisa Fernanda Paez', '3019876543', 'luisa.paez@gmail.com', 'Activo'),
+('NIT', '901234888-3', 'Hotel Plaza Real', '3174561230', 'gerencia@hotelplazareal.com', 'Activo'),
+('CC', '80123456', 'Jorge Enrique Bustos', '3112223344', 'jorge.bustos@gmail.com', 'Activo'),
+('CC', '1015678901', 'Diana Marcela Torres', '3145556677', 'diana.torres@gmail.com', 'Activo'),
+('NIT', '830111222-5', 'Colegio San José', '3208889900', 'rectoria@sanjose.edu.co', 'Activo');
+
+-- Inserción de los 40 Clientes restantes (del 11 al 50)
+insert into Clientes (tipoDocumento, numDocumento, nombreCliente, celularCliente, correoCliente, estadoCliente) values
+('CC', '1000000011', 'Cliente 11', '3000000011', 'cliente11@gmail.com', 'Activo'),
+('CC', '1000000012', 'Cliente 12', '3000000012', 'cliente12@gmail.com', 'Activo'),
+('CC', '1000000013', 'Cliente 13', '3000000013', 'cliente13@gmail.com', 'Activo'),
+('CC', '1000000014', 'Cliente 14', '3000000014', 'cliente14@gmail.com', 'Activo'),
+('CC', '1000000015', 'Cliente 15', '3000000015', 'cliente15@gmail.com', 'Activo'),
+('NIT', '9000000016', 'Empresa 16', '3000000016', 'empresa16@gmail.com', 'Activo'),
+('NIT', '9000000017', 'Empresa 17', '3000000017', 'empresa17@gmail.com', 'Activo'),
+('NIT', '9000000018', 'Empresa 18', '3000000018', 'empresa18@gmail.com', 'Activo'),
+('NIT', '9000000019', 'Empresa 19', '3000000019', 'empresa19@gmail.com', 'Activo'),
+('NIT', '9000000020', 'Empresa 20', '3000000020', 'empresa20@gmail.com', 'Activo'),
+('CC', '1000000021', 'Cliente 21', '3000000021', 'cliente21@gmail.com', 'Activo'),
+('CC', '1000000022', 'Cliente 22', '3000000022', 'cliente22@gmail.com', 'Activo'),
+('CC', '1000000023', 'Cliente 23', '3000000023', 'cliente23@gmail.com', 'Activo'),
+('CC', '1000000024', 'Cliente 24', '3000000024', 'cliente24@gmail.com', 'Activo'),
+('CC', '1000000025', 'Cliente 25', '3000000025', 'cliente25@gmail.com', 'Activo'),
+('NIT', '9000000026', 'Empresa 26', '3000000026', 'empresa26@gmail.com', 'Activo'),
+('NIT', '9000000027', 'Empresa 27', '3000000027', 'empresa27@gmail.com', 'Activo'),
+('NIT', '9000000028', 'Empresa 28', '3000000028', 'empresa28@gmail.com', 'Activo'),
+('NIT', '9000000029', 'Empresa 29', '3000000029', 'empresa29@gmail.com', 'Activo'),
+('NIT', '9000000030', 'Empresa 30', '3000000030', 'empresa30@gmail.com', 'Activo'),
+('CC', '1000000031', 'Cliente 31', '3000000031', 'cliente31@gmail.com', 'Activo'),
+('CC', '1000000032', 'Cliente 32', '3000000032', 'cliente32@gmail.com', 'Activo'),
+('CC', '1000000033', 'Cliente 33', '3000000033', 'cliente33@gmail.com', 'Activo'),
+('CC', '1000000034', 'Cliente 34', '3000000034', 'cliente34@gmail.com', 'Activo'),
+('CC', '1000000035', 'Cliente 35', '3000000035', 'cliente35@gmail.com', 'Activo'),
+('NIT', '9000000036', 'Empresa 36', '3000000036', 'empresa36@gmail.com', 'Activo'),
+('NIT', '9000000037', 'Empresa 37', '3000000037', 'empresa37@gmail.com', 'Activo'),
+('NIT', '9000000038', 'Empresa 38', '3000000038', 'empresa38@gmail.com', 'Activo'),
+('NIT', '9000000039', 'Empresa 39', '3000000039', 'empresa39@gmail.com', 'Activo'),
+('NIT', '9000000040', 'Empresa 40', '3000000040', 'empresa40@gmail.com', 'Activo'),
+('CC', '1000000041', 'Cliente 41', '3000000041', 'cliente41@gmail.com', 'Activo'),
+('CC', '1000000042', 'Cliente 42', '3000000042', 'cliente42@gmail.com', 'Activo'),
+('CC', '1000000043', 'Cliente 43', '3000000043', 'cliente43@gmail.com', 'Activo'),
+('CC', '1000000044', 'Cliente 44', '3000000044', 'cliente44@gmail.com', 'Activo'),
+('CC', '1000000045', 'Cliente 45', '3000000045', 'cliente45@gmail.com', 'Activo'),
+('NIT', '9000000046', 'Empresa 46', '3000000046', 'empresa46@gmail.com', 'Activo'),
+('NIT', '9000000047', 'Empresa 47', '3000000047', 'empresa47@gmail.com', 'Activo'),
+('NIT', '9000000048', 'Empresa 48', '3000000048', 'empresa48@gmail.com', 'Activo'),
+('NIT', '9000000049', 'Empresa 49', '3000000049', 'empresa49@gmail.com', 'Activo'),
+('NIT', '9000000050', 'Empresa 50', '3000000050', 'empresa50@gmail.com', 'Activo');
+
+-- Teléfono fijo de algunos clientes (campo opcional)
+update Clientes set telefonoCliente = '6012345678' where idCliente = 2;
+update Clientes set telefonoCliente = '6017654321' where idCliente = 7;
+update Clientes set telefonoCliente = '6013456789' where idCliente = 10;
+
+-- Propiedades: la 1 a la 50 son el inmueble principal de cada cliente;
+-- de la 51 a la 55 son inmuebles adicionales que pidieron cotización.
+insert into Propiedad (tipoPropiedad, direccionPropiedad, areaM2, idCliente) values
+('Casa', 'Calle 11 # 8-17, Bogotá', 100.00, 1),
+('Restaurante', 'Calle 12 # 11-24, Bogotá', 100.00, 2),
+('Casa', 'Carrera 13 # 14-31, Bogotá', 100.00, 3),
+('Apartamento', 'Calle 14 # 17-38, Bogotá', 100.00, 4),
+('Local Comercial', 'Calle 15 # 20-45, Bogotá', 100.00, 5),
+('Apartamento', 'Carrera 16 # 23-52, Bogotá', 100.00, 6),
+('Hotel', 'Calle 17 # 26-59, Bogotá', 100.00, 7),
+('Casa', 'Calle 18 # 29-66, Bogotá', 100.00, 8),
+('Apartamento', 'Carrera 19 # 32-73, Bogotá', 100.00, 9),
+('Institución Educativa', 'Calle 20 # 35-80, Bogotá', 100.00, 10),
+('Apartamento', 'Calle 21 # 38-87, Bogotá', 100.00, 11),
+('Casa', 'Carrera 22 # 41-14, Bogotá', 100.00, 12),
+('Apartamento', 'Calle 23 # 44-21, Bogotá', 100.00, 13),
+('Casa', 'Calle 24 # 47-28, Bogotá', 100.00, 14),
+('Apartamento', 'Carrera 25 # 50-35, Bogotá', 100.00, 15),
+('Local Comercial', 'Calle 26 # 53-42, Bogotá', 100.00, 16),
+('Bodega', 'Calle 27 # 56-49, Bogotá', 100.00, 17),
+('Local Comercial', 'Carrera 28 # 59-56, Bogotá', 100.00, 18),
+('Bodega', 'Calle 29 # 62-63, Bogotá', 100.00, 19),
+('Local Comercial', 'Calle 30 # 5-70, Bogotá', 100.00, 20),
+('Apartamento', 'Carrera 31 # 8-77, Bogotá', 100.00, 21),
+('Casa', 'Calle 32 # 11-84, Bogotá', 100.00, 22),
+('Apartamento', 'Calle 33 # 14-11, Bogotá', 100.00, 23),
+('Casa', 'Carrera 34 # 17-18, Bogotá', 100.00, 24),
+('Apartamento', 'Calle 35 # 20-25, Bogotá', 100.00, 25),
+('Local Comercial', 'Calle 36 # 23-32, Bogotá', 100.00, 26),
+('Bodega', 'Carrera 37 # 26-39, Bogotá', 100.00, 27),
+('Local Comercial', 'Calle 38 # 29-46, Bogotá', 100.00, 28),
+('Bodega', 'Calle 39 # 32-53, Bogotá', 100.00, 29),
+('Local Comercial', 'Carrera 40 # 35-60, Bogotá', 100.00, 30),
+('Apartamento', 'Calle 41 # 38-67, Bogotá', 100.00, 31),
+('Casa', 'Calle 42 # 41-74, Bogotá', 100.00, 32),
+('Apartamento', 'Carrera 43 # 44-81, Bogotá', 100.00, 33),
+('Casa', 'Calle 44 # 47-88, Bogotá', 100.00, 34),
+('Apartamento', 'Calle 45 # 50-15, Bogotá', 100.00, 35),
+('Local Comercial', 'Carrera 46 # 53-22, Bogotá', 100.00, 36),
+('Bodega', 'Calle 47 # 56-29, Bogotá', 100.00, 37),
+('Local Comercial', 'Calle 48 # 59-36, Bogotá', 100.00, 38),
+('Bodega', 'Carrera 49 # 62-43, Bogotá', 100.00, 39),
+('Local Comercial', 'Calle 50 # 5-50, Bogotá', 100.00, 40),
+('Apartamento', 'Calle 51 # 8-57, Bogotá', 100.00, 41),
+('Casa', 'Carrera 52 # 11-64, Bogotá', 100.00, 42),
+('Apartamento', 'Calle 53 # 14-71, Bogotá', 100.00, 43),
+('Casa', 'Calle 54 # 17-78, Bogotá', 100.00, 44),
+('Apartamento', 'Carrera 55 # 20-85, Bogotá', 100.00, 45),
+('Local Comercial', 'Calle 56 # 23-12, Bogotá', 100.00, 46),
+('Bodega', 'Calle 57 # 26-19, Bogotá', 100.00, 47),
+('Local Comercial', 'Carrera 58 # 29-26, Bogotá', 100.00, 48),
+('Bodega', 'Calle 59 # 32-33, Bogotá', 100.00, 49),
+('Local Comercial', 'Calle 60 # 35-40, Bogotá', 100.00, 50),
+('Local Comercial', 'Calle 45 # 13-20, Bogotá', 200.00, 2),
+('Local Comercial', 'Carrera 7 # 72-10, Bogotá', 175.00, 5),
+('Hotel', 'Calle 100 # 15-30, Bogotá', 450.00, 7),
+('Institución Educativa', 'Avenida 68 # 40-15, Bogotá', 600.00, 10),
+('Casa', 'Calle 63 # 24-11, Bogotá', 80.00, 3);
+
+-- Citas 1 a 50: servicios directos ya realizados (propiedad = principal del cliente)
+insert into CitaFumigacion (fechaHora, estadoCita, tipoSolicitud, observaciones, idPropiedad, idUsuario) values
+('2026-10-01 08:00:00', 'Realizado', 'Servicio Directo', 'Servicio estándar', 1, 2),
+('2026-10-01 10:00:00', 'Realizado', 'Servicio Directo', 'Servicio estándar', 2, 2),
+('2026-10-01 14:00:00', 'Realizado', 'Servicio Directo', 'Servicio estándar', 3, 2),
+('2026-10-02 08:00:00', 'Realizado', 'Servicio Directo', 'Servicio estándar', 4, 2),
+('2026-10-02 11:00:00', 'Realizado', 'Servicio Directo', 'Servicio estándar', 5, 2),
+('2026-10-02 15:00:00', 'Realizado', 'Servicio Directo', 'Servicio estándar', 6, 2),
+('2026-10-03 08:00:00', 'Realizado', 'Servicio Directo', 'Servicio estándar', 7, 2),
+('2026-10-03 10:00:00', 'Realizado', 'Servicio Directo', 'Servicio estándar', 8, 2),
+('2026-10-03 14:00:00', 'Realizado', 'Servicio Directo', 'Servicio estándar', 9, 2),
+('2026-10-04 09:00:00', 'Realizado', 'Servicio Directo', 'Servicio estándar', 10, 2),
+('2026-10-04 11:00:00', 'Realizado', 'Servicio Directo', 'Servicio estándar', 11, 2),
+('2026-10-04 15:00:00', 'Realizado', 'Servicio Directo', 'Servicio estándar', 12, 2),
+('2026-10-05 08:00:00', 'Realizado', 'Servicio Directo', 'Servicio estándar', 13, 2),
+('2026-10-05 10:00:00', 'Realizado', 'Servicio Directo', 'Servicio estándar', 14, 2),
+('2026-10-05 14:00:00', 'Realizado', 'Servicio Directo', 'Servicio estándar', 15, 2),
+('2026-10-06 08:00:00', 'Realizado', 'Servicio Directo', 'Servicio estándar', 16, 2),
+('2026-10-06 11:00:00', 'Realizado', 'Servicio Directo', 'Servicio estándar', 17, 2),
+('2026-10-06 15:00:00', 'Realizado', 'Servicio Directo', 'Servicio estándar', 18, 2),
+('2026-10-07 08:00:00', 'Realizado', 'Servicio Directo', 'Servicio estándar', 19, 2),
+('2026-10-07 10:00:00', 'Realizado', 'Servicio Directo', 'Servicio estándar', 20, 2),
+('2026-10-07 14:00:00', 'Realizado', 'Servicio Directo', 'Servicio estándar', 21, 2),
+('2026-10-08 08:00:00', 'Realizado', 'Servicio Directo', 'Servicio estándar', 22, 2),
+('2026-10-08 11:00:00', 'Realizado', 'Servicio Directo', 'Servicio estándar', 23, 2),
+('2026-10-08 15:00:00', 'Realizado', 'Servicio Directo', 'Servicio estándar', 24, 2),
+('2026-10-09 08:00:00', 'Realizado', 'Servicio Directo', 'Servicio estándar', 25, 2),
+('2026-10-09 10:00:00', 'Realizado', 'Servicio Directo', 'Servicio estándar', 26, 2),
+('2026-10-09 14:00:00', 'Realizado', 'Servicio Directo', 'Servicio estándar', 27, 2),
+('2026-10-10 09:00:00', 'Realizado', 'Servicio Directo', 'Servicio estándar', 28, 2),
+('2026-10-10 11:00:00', 'Realizado', 'Servicio Directo', 'Servicio estándar', 29, 2),
+('2026-10-10 15:00:00', 'Realizado', 'Servicio Directo', 'Servicio estándar', 30, 2),
+('2026-10-11 08:00:00', 'Realizado', 'Servicio Directo', 'Servicio estándar', 31, 2),
+('2026-10-11 10:00:00', 'Realizado', 'Servicio Directo', 'Servicio estándar', 32, 2),
+('2026-10-11 14:00:00', 'Realizado', 'Servicio Directo', 'Servicio estándar', 33, 2),
+('2026-10-12 08:00:00', 'Realizado', 'Servicio Directo', 'Servicio estándar', 34, 2),
+('2026-10-12 11:00:00', 'Realizado', 'Servicio Directo', 'Servicio estándar', 35, 2),
+('2026-10-12 15:00:00', 'Realizado', 'Servicio Directo', 'Servicio estándar', 36, 2),
+('2026-10-13 08:00:00', 'Realizado', 'Servicio Directo', 'Servicio estándar', 37, 2),
+('2026-10-13 10:00:00', 'Realizado', 'Servicio Directo', 'Servicio estándar', 38, 2),
+('2026-10-13 14:00:00', 'Realizado', 'Servicio Directo', 'Servicio estándar', 39, 2),
+('2026-10-14 09:00:00', 'Realizado', 'Servicio Directo', 'Servicio estándar', 40, 2),
+('2026-10-14 11:00:00', 'Realizado', 'Servicio Directo', 'Servicio estándar', 41, 2),
+('2026-10-14 15:00:00', 'Realizado', 'Servicio Directo', 'Servicio estándar', 42, 2),
+('2026-10-15 08:00:00', 'Realizado', 'Servicio Directo', 'Servicio estándar', 43, 2),
+('2026-10-15 10:00:00', 'Realizado', 'Servicio Directo', 'Servicio estándar', 44, 2),
+('2026-10-15 14:00:00', 'Realizado', 'Servicio Directo', 'Servicio estándar', 45, 2),
+('2026-10-16 08:00:00', 'Realizado', 'Servicio Directo', 'Servicio estándar', 46, 2),
+('2026-10-16 11:00:00', 'Realizado', 'Servicio Directo', 'Servicio estándar', 47, 2),
+('2026-10-16 15:00:00', 'Realizado', 'Servicio Directo', 'Servicio estándar', 48, 2),
+('2026-10-17 08:00:00', 'Realizado', 'Servicio Directo', 'Servicio estándar', 49, 2),
+('2026-10-17 10:00:00', 'Realizado', 'Servicio Directo', 'Servicio estándar', 50, 2);
+
+-- Citas 51 a 55: visitas de cotización realizadas / 56 y 57: pendientes
+insert into CitaFumigacion (fechaHora, estadoCita, tipoSolicitud, observaciones, idPropiedad, idUsuario) values
+('2026-10-18 08:00:00', 'Realizado', 'Visita Cotización', 'Cotización local comercial', 51, 2),
+('2026-10-18 10:00:00', 'Realizado', 'Visita Cotización', 'Cotización panadería', 52, 6),
+('2026-10-18 14:00:00', 'Realizado', 'Visita Cotización', 'Cotización hotel', 53, 2),
+('2026-10-19 09:00:00', 'Realizado', 'Visita Cotización', 'Cotización colegio', 54, 6),
+('2026-10-19 11:00:00', 'Realizado', 'Visita Cotización', 'Cotización casa', 55, 2),
+('2026-11-25 09:00:00', 'Pendiente', 'Visita Cotización', 'Cliente reporta roedores', 4, 2),
+('2026-11-26 15:00:00', 'Pendiente', 'Servicio Directo', 'Refuerzo de fumigación', 1, 6);
+
+-- Las 5 primeras ya fueron inspeccionadas; la de la cita 56 sigue en $0
+insert into VisitaCotizacion (valorServicio, areaMedidaM2, estadoCotizacion, observacionInspeccion, idCita) values
+(400000.00, 200.00, 'Cotizada', 'Cucaracha en cocina y bodega', 51),
+(350000.00, 175.00, 'Cotizada', 'Cucaracha en zona de hornos', 52),
+(900000.00, 450.00, 'Cotizada', 'Cucaracha en cocina y habitaciones', 53),
+(1200000.00, 600.00, 'Cotizada', 'Cucaracha en cafetería y salones', 54),
+(160000.00, 80.00, 'Cotizada', 'Cucaracha en cocina', 55),
+(0.00, null, 'Por inspeccionar', null, 56);
+
+-- Tabla 3: Insumos Químicos Generales (5 Insumos Principales)
+insert into InsumoQuimico (nombreInsumo, unidadMedida, stockActual, stockMinimo, precioListaActual, estadoInsumo) values
+('Deltametrina 2.5%', 'ml', 15000.00, 1000.00, 45.00, 'Disponible'),
+('Gel Cucarachicida Alfa', 'g', 5000.00, 200.00, 120.00, 'Disponible'),
+('Raticida Bloque Parafina', 'g', 10000.00, 500.00, 35.00, 'Disponible'),
+('Termiticida Líquido B', 'ml', 8000.00, 1000.00, 90.00, 'Disponible'),
+('Insecticida Rastrero C', 'ml', 12000.00, 800.00, 40.00, 'Disponible');
+
+insert into Plaga (nombrePlaga, tarifaPorM2, dosisEstandarPorM2, idInsumoQuimico) values
+('Cucaracha Germánica', 2000.00, 5.00, 1),
+('Roedor Doméstico', 2500.00, 10.00, 3),
+('Termita de Madera', 3500.00, 8.00, 4),
+('Insectos Rastreros Varios', 1800.00, 4.00, 5),
+('Hormiga de Jardín/Estructura', 2200.00, 3.50, 2);
+
+insert into ServicioDirecto (costoTotal, dosisInsumo, areaM2, estadoServicio, fechaTransaccion, detalleOperacion, idCita, idPlaga) values
+(200000.00, 500.00, 100.00, TRUE, '2026-10-01 09:30:00', 'Servicio estándar en propiedad', 1, 1),
+(200000.00, 500.00, 100.00, TRUE, '2026-10-01 11:30:00', 'Servicio estándar en propiedad', 2, 1),
+(200000.00, 500.00, 100.00, TRUE, '2026-10-01 15:30:00', 'Servicio estándar en propiedad', 3, 1),
+(200000.00, 500.00, 100.00, TRUE, '2026-10-02 09:30:00', 'Servicio estándar en propiedad', 4, 1),
+(200000.00, 500.00, 100.00, TRUE, '2026-10-02 12:30:00', 'Servicio estándar en propiedad', 5, 1),
+(200000.00, 500.00, 100.00, TRUE, '2026-10-02 16:30:00', 'Servicio estándar en propiedad', 6, 1),
+(200000.00, 500.00, 100.00, TRUE, '2026-10-03 09:30:00', 'Servicio estándar en propiedad', 7, 1),
+(200000.00, 500.00, 100.00, TRUE, '2026-10-03 11:30:00', 'Servicio estándar en propiedad', 8, 1),
+(200000.00, 500.00, 100.00, TRUE, '2026-10-03 15:30:00', 'Servicio estándar en propiedad', 9, 1),
+(200000.00, 500.00, 100.00, TRUE, '2026-10-04 10:30:00', 'Servicio estándar en propiedad', 10, 1),
+(200000.00, 500.00, 100.00, TRUE, '2026-10-04 12:30:00', 'Servicio estándar en propiedad', 11, 1),
+(200000.00, 500.00, 100.00, TRUE, '2026-10-04 16:30:00', 'Servicio estándar en propiedad', 12, 1),
+(200000.00, 500.00, 100.00, TRUE, '2026-10-05 09:30:00', 'Servicio estándar en propiedad', 13, 1),
+(200000.00, 500.00, 100.00, TRUE, '2026-10-05 11:30:00', 'Servicio estándar en propiedad', 14, 1),
+(200000.00, 500.00, 100.00, TRUE, '2026-10-05 15:30:00', 'Servicio estándar en propiedad', 15, 1),
+(200000.00, 500.00, 100.00, TRUE, '2026-10-06 09:30:00', 'Servicio estándar en propiedad', 16, 1),
+(200000.00, 500.00, 100.00, TRUE, '2026-10-06 12:30:00', 'Servicio estándar en propiedad', 17, 1),
+(200000.00, 500.00, 100.00, TRUE, '2026-10-06 16:30:00', 'Servicio estándar en propiedad', 18, 1),
+(200000.00, 500.00, 100.00, TRUE, '2026-10-07 09:30:00', 'Servicio estándar en propiedad', 19, 1),
+(200000.00, 500.00, 100.00, TRUE, '2026-10-07 11:30:00', 'Servicio estándar en propiedad', 20, 1),
+(200000.00, 500.00, 100.00, TRUE, '2026-10-07 15:30:00', 'Servicio estándar en propiedad', 21, 1),
+(200000.00, 500.00, 100.00, TRUE, '2026-10-08 09:30:00', 'Servicio estándar en propiedad', 22, 1),
+(200000.00, 500.00, 100.00, TRUE, '2026-10-08 12:30:00', 'Servicio estándar en propiedad', 23, 1),
+(200000.00, 500.00, 100.00, TRUE, '2026-10-08 16:30:00', 'Servicio estándar en propiedad', 24, 1),
+(200000.00, 500.00, 100.00, TRUE, '2026-10-09 09:30:00', 'Servicio estándar en propiedad', 25, 1),
+(200000.00, 500.00, 100.00, TRUE, '2026-10-09 11:30:00', 'Servicio estándar en propiedad', 26, 1),
+(200000.00, 500.00, 100.00, TRUE, '2026-10-09 15:30:00', 'Servicio estándar en propiedad', 27, 1),
+(200000.00, 500.00, 100.00, TRUE, '2026-10-10 10:30:00', 'Servicio estándar en propiedad', 28, 1),
+(200000.00, 500.00, 100.00, TRUE, '2026-10-10 12:30:00', 'Servicio estándar en propiedad', 29, 1),
+(200000.00, 500.00, 100.00, TRUE, '2026-10-10 16:30:00', 'Servicio estándar en propiedad', 30, 1),
+(200000.00, 500.00, 100.00, TRUE, '2026-10-11 09:30:00', 'Servicio estándar en propiedad', 31, 1),
+(200000.00, 500.00, 100.00, TRUE, '2026-10-11 11:30:00', 'Servicio estándar en propiedad', 32, 1),
+(200000.00, 500.00, 100.00, TRUE, '2026-10-11 15:30:00', 'Servicio estándar en propiedad', 33, 1),
+(200000.00, 500.00, 100.00, TRUE, '2026-10-12 09:30:00', 'Servicio estándar en propiedad', 34, 1),
+(200000.00, 500.00, 100.00, TRUE, '2026-10-12 12:30:00', 'Servicio estándar en propiedad', 35, 1),
+(200000.00, 500.00, 100.00, TRUE, '2026-10-12 16:30:00', 'Servicio estándar en propiedad', 36, 1),
+(200000.00, 500.00, 100.00, TRUE, '2026-10-13 09:30:00', 'Servicio estándar en propiedad', 37, 1),
+(200000.00, 500.00, 100.00, TRUE, '2026-10-13 11:30:00', 'Servicio estándar en propiedad', 38, 1),
+(200000.00, 500.00, 100.00, TRUE, '2026-10-13 15:30:00', 'Servicio estándar en propiedad', 39, 1),
+(200000.00, 500.00, 100.00, TRUE, '2026-10-14 10:30:00', 'Servicio estándar en propiedad', 40, 1),
+(200000.00, 500.00, 100.00, TRUE, '2026-10-14 12:30:00', 'Servicio estándar en propiedad', 41, 1),
+(200000.00, 500.00, 100.00, TRUE, '2026-10-14 16:30:00', 'Servicio estándar en propiedad', 42, 1),
+(200000.00, 500.00, 100.00, TRUE, '2026-10-15 09:30:00', 'Servicio estándar en propiedad', 43, 1),
+(200000.00, 500.00, 100.00, TRUE, '2026-10-15 11:30:00', 'Servicio estándar en propiedad', 44, 1),
+(200000.00, 500.00, 100.00, TRUE, '2026-10-15 15:30:00', 'Servicio estándar en propiedad', 45, 1),
+(200000.00, 500.00, 100.00, TRUE, '2026-10-16 09:30:00', 'Servicio estándar en propiedad', 46, 1),
+(200000.00, 500.00, 100.00, TRUE, '2026-10-16 12:30:00', 'Servicio estándar en propiedad', 47, 1),
+(200000.00, 500.00, 100.00, TRUE, '2026-10-16 16:30:00', 'Servicio estándar en propiedad', 48, 1),
+(200000.00, 500.00, 100.00, TRUE, '2026-10-17 09:30:00', 'Servicio estándar en propiedad', 49, 1),
+(200000.00, 500.00, 100.00, TRUE, '2026-10-17 11:30:00', 'Servicio estándar en propiedad', 50, 1);
+
+insert into CertificadoFumigacion (fechaEmision, fechaVencimiento, tokenEnlace, estadoVigencia, idServicio) values
+('2026-10-01', '2027-04-01', 'TOKEN0000000000000000000000001', 'Vigente', 1),
+('2026-10-01', '2027-04-01', 'TOKEN0000000000000000000000002', 'Vigente', 2),
+('2026-10-01', '2027-04-01', 'TOKEN0000000000000000000000003', 'Vigente', 3),
+('2026-10-02', '2027-04-02', 'TOKEN0000000000000000000000004', 'Vigente', 4),
+('2026-10-02', '2027-04-02', 'TOKEN0000000000000000000000005', 'Vigente', 5),
+('2026-10-02', '2027-04-02', 'TOKEN0000000000000000000000006', 'Vigente', 6),
+('2026-10-03', '2027-04-03', 'TOKEN0000000000000000000000007', 'Vigente', 7),
+('2026-10-03', '2027-04-03', 'TOKEN0000000000000000000000008', 'Vigente', 8),
+('2026-10-03', '2027-04-03', 'TOKEN0000000000000000000000009', 'Vigente', 9),
+('2026-10-04', '2027-04-04', 'TOKEN0000000000000000000000010', 'Vigente', 10),
+('2026-10-04', '2027-04-04', 'TOKEN0000000000000000000000011', 'Vigente', 11),
+('2026-10-04', '2027-04-04', 'TOKEN0000000000000000000000012', 'Vigente', 12),
+('2026-10-05', '2027-04-05', 'TOKEN0000000000000000000000013', 'Vigente', 13),
+('2026-10-05', '2027-04-05', 'TOKEN0000000000000000000000014', 'Vigente', 14),
+('2026-10-05', '2027-04-05', 'TOKEN0000000000000000000000015', 'Vigente', 15),
+('2026-10-06', '2027-04-06', 'TOKEN0000000000000000000000016', 'Vigente', 16),
+('2026-10-06', '2027-04-06', 'TOKEN0000000000000000000000017', 'Vigente', 17),
+('2026-10-06', '2027-04-06', 'TOKEN0000000000000000000000018', 'Vigente', 18),
+('2026-10-07', '2027-04-07', 'TOKEN0000000000000000000000019', 'Vigente', 19),
+('2026-10-07', '2027-04-07', 'TOKEN0000000000000000000000020', 'Vigente', 20),
+('2026-10-07', '2027-04-07', 'TOKEN0000000000000000000000021', 'Vigente', 21),
+('2026-10-08', '2027-04-08', 'TOKEN0000000000000000000000022', 'Vigente', 22),
+('2026-10-08', '2027-04-08', 'TOKEN0000000000000000000000023', 'Vigente', 23),
+('2026-10-08', '2027-04-08', 'TOKEN0000000000000000000000024', 'Vigente', 24),
+('2026-10-09', '2027-04-09', 'TOKEN0000000000000000000000025', 'Vigente', 25),
+('2026-10-09', '2027-04-09', 'TOKEN0000000000000000000000026', 'Vigente', 26),
+('2026-10-09', '2027-04-09', 'TOKEN0000000000000000000000027', 'Vigente', 27),
+('2026-10-10', '2027-04-10', 'TOKEN0000000000000000000000028', 'Vigente', 28),
+('2026-10-10', '2027-04-10', 'TOKEN0000000000000000000000029', 'Vigente', 29),
+('2026-10-10', '2027-04-10', 'TOKEN0000000000000000000000030', 'Vigente', 30),
+('2026-10-11', '2027-04-11', 'TOKEN0000000000000000000000031', 'Vigente', 31),
+('2026-10-11', '2027-04-11', 'TOKEN0000000000000000000000032', 'Vigente', 32),
+('2026-10-11', '2027-04-11', 'TOKEN0000000000000000000000033', 'Vigente', 33),
+('2026-10-12', '2027-04-12', 'TOKEN0000000000000000000000034', 'Vigente', 34),
+('2026-10-12', '2027-04-12', 'TOKEN0000000000000000000000035', 'Vigente', 35),
+('2026-10-12', '2027-04-12', 'TOKEN0000000000000000000000036', 'Vigente', 36),
+('2026-10-13', '2027-04-13', 'TOKEN0000000000000000000000037', 'Vigente', 37),
+('2026-10-13', '2027-04-13', 'TOKEN0000000000000000000000038', 'Vigente', 38),
+('2026-10-13', '2027-04-13', 'TOKEN0000000000000000000000039', 'Vigente', 39),
+('2026-10-14', '2027-04-14', 'TOKEN0000000000000000000000040', 'Vigente', 40),
+('2026-10-14', '2027-04-14', 'TOKEN0000000000000000000000041', 'Vigente', 41),
+('2026-10-14', '2027-04-14', 'TOKEN0000000000000000000000042', 'Vigente', 42),
+('2026-10-15', '2027-04-15', 'TOKEN0000000000000000000000043', 'Vigente', 43),
+('2026-10-15', '2027-04-15', 'TOKEN0000000000000000000000044', 'Vigente', 44),
+('2026-10-15', '2027-04-15', 'TOKEN0000000000000000000000045', 'Vigente', 45),
+('2026-10-16', '2027-04-16', 'TOKEN0000000000000000000000046', 'Vigente', 46),
+('2026-10-16', '2027-04-16', 'TOKEN0000000000000000000000047', 'Vigente', 47),
+('2026-10-16', '2027-04-16', 'TOKEN0000000000000000000000048', 'Vigente', 48),
+('2026-10-17', '2027-04-17', 'TOKEN0000000000000000000000049', 'Vigente', 49),
+('2026-10-17', '2027-04-17', 'TOKEN0000000000000000000000050', 'Vigente', 50);
+
+insert into Proveedor (nit, razonSocial, telefonoProveedor, correoProveedor, ciudadProveedor, estadoProveedor) values
+('900111222-1', 'Químicos Andinos S.A.S.', '6012345678', 'ventas@quimicosandinos.com', 'Bogotá', 'Activo'),
+('900333444-5', 'Agroinsumos de Colombia S.A.S.', '6045551234', 'pedidos@agroinsumos.co', 'Medellín', 'Activo'),
+('900555666-9', 'Plagax Ltda.', '6026667788', 'comercial@plagax.com', 'Cali', 'Activo'),
+('900777888-2', 'Distrifumi S.A.S.', '6013334455', 'contacto@distrifumi.com', 'Bogotá', 'Activo'),
+('900999000-4', 'Químicos del Caribe Ltda.', '6057778899', 'info@quimicosdelcaribe.com', 'Barranquilla', 'Inactivo');
+
+insert into OrdenCompra (fechaCompra, valorTotal, estadoCompra, detalleCompra, idProveedor) values
+('2026-09-05', 0, 'Recibida', 'Reposición mensual de insecticidas', 1),
+('2026-09-12', 0, 'Recibida', 'Compra de raticida', 2),
+('2026-09-20', 0, 'Recibida', 'Pedido urgente', 1),
+('2026-10-02', 0, 'Recibida', 'Reposición de geles', 4),
+('2026-10-20', 0, 'Pendiente', 'Compra de termiticida', 3),
+('2026-11-02', 0, 'Pendiente', 'Compra de insecticida rastrero', 4);
+
+insert into DetalleOrdenCompra (cantidad, precioUnitario, idCompra, idInsumoQuimico) values
+(5000.00, 40.00, 1, 1),
+(3000.00, 36.00, 1, 5),
+(4000.00, 30.00, 2, 3),
+(2000.00, 38.00, 2, 5),
+(1000.00, 85.00, 3, 4),
+(2000.00, 42.00, 3, 1),
+(1500.00, 110.00, 4, 2),
+(1000.00, 88.00, 4, 4),
+(3000.00, 85.00, 5, 4),
+(2500.00, 38.00, 6, 5),
+(1000.00, 105.00, 6, 2);
+
+-- Se deja el valorTotal de cada orden consistente con su detalle
+update OrdenCompra o
+set o.valorTotal = (select sum(d.cantidad * d.precioUnitario)
+                    from DetalleOrdenCompra d where d.idCompra = o.idCompra);
+
+-- Histórico de ajustes de inventario (anteriores a la activación de los triggers)
+insert into AjusteInventario (fechaAjuste, tipoAjuste, cantidad, justificacion, detalleAjuste, idInsumoQuimico) values
+('2026-09-05', 'Compra Recibida', 5000.00, 'Ingreso orden de compra #1', 'Ingreso mensual', 1),
+('2026-09-12', 'Compra Recibida', 4000.00, 'Ingreso orden de compra #2', 'Ingreso mensual', 3),
+('2026-09-28', 'Merma', 150.00, 'Derrame durante almacenamiento', 'Envase dañado', 4),
+('2026-10-03', 'Salida', 300.00, 'Préstamo de insumo a bodega auxiliar', 'Traslado interno', 2),
+('2026-10-10', 'Entrada', 200.00, 'Devolución de sobrante de servicio', 'Sobrante sin usar', 5);
+
+-- Histórico de consumo de los 50 servicios ya realizados (alimenta el
+-- cálculo de autonomía del inventario). El stock inicial ya lo descuenta.
+insert into AjusteInventario (fechaAjuste, tipoAjuste, cantidad, justificacion, detalleAjuste, idInsumoQuimico)
+select date(s.fechaTransaccion), 'Consumo Servicio', s.dosisInsumo,
+       concat('Descuento por servicio #', s.idServicio), concat('Plaga tratada: ', p.nombrePlaga), p.idInsumoQuimico
+from ServicioDirecto s
+inner join Plaga p on s.idPlaga = p.idPlaga;
+
+
+-- =====================================================================
+--  CONSULTAS BÁSICAS Y ESPECÍFICAS
+-- =====================================================================
+USE eficaz_fumigaciones;
+
+-- 0. TABLA: Usuarios
+
+select * from Usuarios;
+
+select rolUsuario, count(*) as TotalUsuarios
+from Usuarios
+group by rolUsuario;
+
+-- 1. TABLA: Clientes
+
+select * from Clientes;
+
+select idCliente, numDocumento, nombreCliente, celularCliente, correoCliente
+from Clientes
+where tipoDocumento = 'CC' and estadoCliente = 'Activo';
+
+select tipoDocumento, count(*) as TotalClientes
+from Clientes
+group by tipoDocumento;
+
+select * from Clientes
+where numDocumento = '1018400111';
+
+
+-- 2. TABLA: Propiedad (nueva)
+
+select * from Propiedad;
+
+-- Clientes con más de una propiedad registrada
+select cli.idCliente, cli.nombreCliente, count(p.idPropiedad) as TotalPropiedades
+from Clientes cli
+inner join Propiedad p on p.idCliente = cli.idCliente
+group by cli.idCliente, cli.nombreCliente
+having count(p.idPropiedad) > 1;
+
+select tipoPropiedad, count(*) as Cantidad, avg(areaM2) as PromedioAreaM2
+from Propiedad
+group by tipoPropiedad;
+
+
+-- 3. TABLA: CitaFumigacion
+
+select * from CitaFumigacion;
+
+select idCita, fechaHora, tipoSolicitud
+from CitaFumigacion
+where estadoCita = 'Realizado';
+
+select tipoSolicitud, count(*) as CantidadCitas
+from CitaFumigacion
+group by tipoSolicitud;
+
+select * from CitaFumigacion
+order by fechaHora desc;
+
+-- Citas con su cliente, propiedad y técnico asignado
+select c.idCita, c.fechaHora, c.estadoCita, cli.nombreCliente, p.direccionPropiedad, u.nombreUsuario as Tecnico
+from CitaFumigacion c
+inner join Propiedad p on c.idPropiedad = p.idPropiedad
+inner join Clientes cli on p.idCliente = cli.idCliente
+inner join Usuarios u on c.idUsuario = u.idUsuario;
+
+
+-- 4. TABLA: VisitaCotizacion
+
+select * from VisitaCotizacion;
+
+select v.idVisitaCotizacion, c.fechaHora, p.tipoPropiedad, v.areaMedidaM2, p.direccionPropiedad, v.valorServicio, v.estadoCotizacion
+from VisitaCotizacion v
+inner join CitaFumigacion c on v.idCita = c.idCita
+inner join Propiedad p on c.idPropiedad = p.idPropiedad;
+
+select p.tipoPropiedad, avg(v.areaMedidaM2) as PromedioAreaMedida
+from VisitaCotizacion v
+inner join CitaFumigacion c on v.idCita = c.idCita
+inner join Propiedad p on c.idPropiedad = p.idPropiedad
+where v.estadoCotizacion = 'Cotizada'
+group by p.tipoPropiedad;
+
+
+-- 5. TABLA: InsumoQuimico
+
+select * from InsumoQuimico;
+
+select idInsumoQuimico, nombreInsumo, stockActual, stockMinimo
+from InsumoQuimico
+where stockActual <= stockMinimo;
+
+select nombreInsumo, stockActual, precioListaActual, (stockActual * precioListaActual) as ValorTotalEnStock
+from InsumoQuimico;
+
+
+-- 6. TABLA: Plaga
+
+select * from Plaga;
+
+select p.nombrePlaga, p.tarifaPorM2, i.nombreInsumo as QuimicoUtilizado
+from Plaga p
+inner join InsumoQuimico i on p.idInsumoQuimico = i.idInsumoQuimico;
+
+select nombrePlaga, tarifaPorM2
+from Plaga
+where tarifaPorM2 > 2000.00;
+
+
+-- 7. TABLA: ServicioDirecto
+
+select * from ServicioDirecto;
+
+-- El cliente se obtiene por cita -> propiedad -> cliente
+select s.idServicio, c.nombreCliente, p.nombrePlaga, s.areaM2, s.costoTotal, s.dosisInsumo, s.fechaTransaccion
+from ServicioDirecto s
+inner join CitaFumigacion cit on s.idCita = cit.idCita
+inner join Propiedad pr on cit.idPropiedad = pr.idPropiedad
+inner join Clientes c on pr.idCliente = c.idCliente
+inner join Plaga p on s.idPlaga = p.idPlaga;
+
+select p.nombrePlaga, count(s.idServicio) AS ServiciosRealizados, sum(s.costoTotal) as TotalIngresos, avg(s.costoTotal) as CobroPromedio
+from ServicioDirecto s
+inner join Plaga p on s.idPlaga = p.idPlaga
+group by p.nombrePlaga
+order by ServiciosRealizados desc;
+
+-- El responsable se obtiene a través de la cita -> Usuarios
+select s.idServicio, s.costoTotal, s.fechaTransaccion
+from ServicioDirecto s
+inner join CitaFumigacion cit on s.idCita = cit.idCita
+inner join Usuarios u on cit.idUsuario = u.idUsuario
+where u.nombreUsuario = 'Camilo Forero';
+
+
+-- 8. TABLA: CertificadoFumigacion
+
+select * from CertificadoFumigacion;
+
+select cert.idCertificado, cli.nombreCliente, cert.fechaEmision, cert.fechaVencimiento, cert.tokenEnlace
+from CertificadoFumigacion cert
+inner join ServicioDirecto s on cert.idServicio = s.idServicio
+inner join CitaFumigacion cit on s.idCita = cit.idCita
+inner join Propiedad pr on cit.idPropiedad = pr.idPropiedad
+inner join Clientes cli on pr.idCliente = cli.idCliente
+where cert.estadoVigencia = 'Vigente';
+
+
+-- 9. TABLA: AjusteInventario
+
+select * from AjusteInventario;
+
+select a.idAjuste, i.nombreInsumo, a.tipoAjuste, a.cantidad, a.justificacion
+from AjusteInventario a
+inner join InsumoQuimico i on a.idInsumoQuimico = i.idInsumoQuimico
+where a.tipoAjuste <> 'Consumo Servicio';
+
+
+-- 10. TABLA: Proveedor
+
+select * from Proveedor;
+
+select nit, razonSocial, correoProveedor, telefonoProveedor
+from Proveedor
+where ciudadProveedor = 'Bogotá' and estadoProveedor = 'Activo';
+
+
+-- 11. TABLA: OrdenCompra
+
+select * from OrdenCompra;
+
+select prv.nit, prv.razonSocial, count(com.idCompra) as TotalOrdenes, sum(com.valorTotal) as InversionTotal
+from OrdenCompra com
+inner join Proveedor prv on com.idProveedor = prv.idProveedor
+group by prv.nit, prv.razonSocial;
+
+
+-- 12. TABLA: DetalleOrdenCompra
+
+select * from DetalleOrdenCompra;
+
+select d.idDetalle, o.idCompra, o.fechaCompra, p.razonSocial, i.nombreInsumo, d.cantidad, d.precioUnitario
+from DetalleOrdenCompra d
+inner join OrdenCompra o on d.idCompra = o.idCompra
+inner join Proveedor p on o.idProveedor = p.idProveedor
+inner join InsumoQuimico i on d.idInsumoQuimico = i.idInsumoQuimico;
+
+
+-- 13. TABLAS DE AUDITORÍA (se llenan solas gracias a los triggers)
+
+select * from AuditoriaClientes;
+select * from AuditoriaInventario;
+select * from AuditoriaServicios;
+select * from AuditoriaCompras;
+
+
+-- =====================================================================
+--  5 MODIFICACIONES Y 1 ELIMINACIÓN
+-- =====================================================================
+USE eficaz_fumigaciones;
+
+update Clientes
+set celularCliente = '3209998877'
+where idCliente = 1;
+
+update Plaga
+set tarifaPorM2 = 2200.00
+where nombrePlaga = 'Cucaracha Germánica';
+
+update InsumoQuimico
+set stockActual = stockActual + 5000.00
+where idInsumoQuimico = 1;
+
+-- Cita pendiente que pasa a 'En Camino'
+update CitaFumigacion
+set estadoCita = 'En Camino'
+where idCita = 56;
+
+-- Descuento del 10% en la orden 3: se cambia el precio del detalle
+-- (el valor total de la orden siempre sale de su detalle)
+update DetalleOrdenCompra
+set precioUnitario = precioUnitario * 0.90
+where idCompra = 3;
+
+update OrdenCompra
+set detalleCompra = 'Pedido urgente con 10% de descuento aplicado'
+where idCompra = 3;
+
+-- Se retira un insumo de una orden que todavía está pendiente
+delete from DetalleOrdenCompra
+where idDetalle = 11;
+
+-- Se recalcula el total de las órdenes afectadas
+update OrdenCompra o
+set o.valorTotal = (select coalesce(sum(d.cantidad * d.precioUnitario), 0)
+                    from DetalleOrdenCompra d where d.idCompra = o.idCompra)
+where o.idCompra in (3, 6);
+
+
+-- =====================================================================
+--  CONSULTAS MULTITABLA
+-- =====================================================================
+USE eficaz_fumigaciones;
+
+select
+    c.nombreCliente,
+    pr.direccionPropiedad,
+    cit.fechaHora as FechaCita,
+    p.nombrePlaga,
+    iq.nombreInsumo as QuimicoAplicado,
+    s.costoTotal
+from ServicioDirecto s
+inner join CitaFumigacion cit on s.idCita = cit.idCita
+inner join Propiedad pr on cit.idPropiedad = pr.idPropiedad
+inner join Clientes c on pr.idCliente = c.idCliente
+inner join Plaga p on s.idPlaga = p.idPlaga
+inner join InsumoQuimico iq on p.idInsumoQuimico = iq.idInsumoQuimico;
+
+
+select
+    prv.razonSocial as Proveedor,
+    oc.idCompra,
+    oc.fechaCompra,
+    iq.nombreInsumo as ProductoComprado,
+    doc.cantidad,
+    oc.valorTotal
+from DetalleOrdenCompra doc
+inner join OrdenCompra oc on doc.idCompra = oc.idCompra
+inner join Proveedor prv on oc.idProveedor = prv.idProveedor
+inner join InsumoQuimico iq on doc.idInsumoQuimico = iq.idInsumoQuimico;
+
+
+select
+    cert.idCertificado,
+    cli.nombreCliente,
+    cli.celularCliente,
+    s.costoTotal as MontoPagado,
+    cert.fechaEmision,
+    cert.fechaVencimiento,
+    cert.tokenEnlace
+from CertificadoFumigacion cert
+inner join ServicioDirecto s on cert.idServicio = s.idServicio
+inner join CitaFumigacion cit on s.idCita = cit.idCita
+inner join Propiedad pr on cit.idPropiedad = pr.idPropiedad
+inner join Clientes cli on pr.idCliente = cli.idCliente
+where cert.estadoVigencia = 'Vigente';
+
+
+-- =====================================================================
+--  SUBCONSULTAS
+-- =====================================================================
+
+select
+    c.idCliente,
+    c.nombreCliente,
+    s.costoTotal,
+    s.fechaTransaccion
+from ServicioDirecto s
+inner join CitaFumigacion cit on s.idCita = cit.idCita
+inner join Propiedad pr on cit.idPropiedad = pr.idPropiedad
+inner join Clientes c on pr.idCliente = c.idCliente
+where s.costoTotal > (
+    select avg(costoTotal)
+    from ServicioDirecto
+);
+
+
+select
+    idInsumoQuimico,
+    nombreInsumo,
+    stockActual,
+    estadoInsumo
+from InsumoQuimico
+where idInsumoQuimico not in (
+    select distinct idInsumoQuimico
+    from DetalleOrdenCompra
+);
+
+
+-- Clientes que tienen al menos una cita que terminó en servicio
+select
+    idCliente,
+    nombreCliente,
+    correoCliente
+from Clientes c
+where exists (
+    select 1
+    from Propiedad pr
+    inner join CitaFumigacion cit on cit.idPropiedad = pr.idPropiedad
+    inner join ServicioDirecto s on s.idCita = cit.idCita
+    where pr.idCliente = c.idCliente
+);
+
+
+select
+    nombrePlaga,
+    tarifaPorM2
+from Plaga
+where tarifaPorM2 = (
+    select max(tarifaPorM2)
+    from Plaga
+);
+
+
+-- =====================================================================
+--  CREACIÓN DE VISTAS
+-- =====================================================================
+USE eficaz_fumigaciones;
+
+create or replace view Vista_ResumenServicios as
+select
+    s.idServicio,
+    c.nombreCliente,
+    c.celularCliente,
+    pr.direccionPropiedad,
+    p.nombrePlaga,
+    s.costoTotal,
+    cert.tokenEnlace,
+    cert.estadoVigencia
+from ServicioDirecto s
+inner join CitaFumigacion cit on s.idCita = cit.idCita
+inner join Propiedad pr on cit.idPropiedad = pr.idPropiedad
+inner join Clientes c on pr.idCliente = c.idCliente
+inner join Plaga p on s.idPlaga = p.idPlaga
+left join CertificadoFumigacion cert on s.idServicio = cert.idServicio;
+
+-- Alerta de inventario: compara contra el stockMinimo de cada insumo
+create or replace view Vista_AlertasInventario as
+select
+    idInsumoQuimico,
+    nombreInsumo,
+    unidadMedida,
+    stockActual,
+    stockMinimo,
+    precioListaActual,
+    estadoInsumo,
+    case when stockActual = 0 then 'AGOTADO' else 'STOCK BAJO' end as alerta
+from InsumoQuimico
+where stockActual <= stockMinimo;
+
+create or replace view Vista_AgendaVisitas as
+select
+    c.idCita,
+    c.fechaHora,
+    c.estadoCita,
+    c.tipoSolicitud,
+    cli.nombreCliente,
+    u.nombreUsuario as tecnicoAsignado,
+    p.tipoPropiedad,
+    v.areaMedidaM2,
+    p.direccionPropiedad,
+    v.valorServicio,
+    v.estadoCotizacion
+from CitaFumigacion c
+inner join VisitaCotizacion v on c.idCita = v.idCita
+inner join Propiedad p on c.idPropiedad = p.idPropiedad
+inner join Clientes cli on p.idCliente = cli.idCliente
+inner join Usuarios u on c.idUsuario = u.idUsuario;
+
+create or replace view Vista_ServiciosPorTecnico as
+select
+    u.idUsuario,
+    u.nombreUsuario as tecnico,
+    count(s.idServicio) as serviciosRealizados,
+    coalesce(sum(s.costoTotal), 0) as ingresosGenerados
+from Usuarios u
+inner join CitaFumigacion cit on cit.idUsuario = u.idUsuario
+inner join ServicioDirecto s on s.idCita = cit.idCita
+group by u.idUsuario, u.nombreUsuario;
+
+create or replace view Vista_ComprasPendientes as
+select
+    oc.idCompra,
+    oc.fechaCompra,
+    prv.nit,
+    prv.razonSocial,
+    prv.ciudadProveedor,
+    oc.valorTotal,
+    oc.estadoCompra
+from OrdenCompra oc
+inner join Proveedor prv on oc.idProveedor = prv.idProveedor
+where oc.estadoCompra = 'Pendiente';
+
+-- Une las 4 tablas de auditoría en una sola consulta
+create or replace view Vista_Auditoria as
+select 'Clientes' as modulo, a.idRegistro, a.accion, a.valorAnterior, a.valorNuevo, a.fechaEvento, u.nombreUsuario
+from AuditoriaClientes a inner join Usuarios u on a.idUsuario = u.idUsuario
+union all
+select 'Inventario', a.idRegistro, a.accion, a.valorAnterior, a.valorNuevo, a.fechaEvento, u.nombreUsuario
+from AuditoriaInventario a inner join Usuarios u on a.idUsuario = u.idUsuario
+union all
+select 'Servicios', a.idRegistro, a.accion, a.valorAnterior, a.valorNuevo, a.fechaEvento, u.nombreUsuario
+from AuditoriaServicios a inner join Usuarios u on a.idUsuario = u.idUsuario
+union all
+select 'Compras', a.idRegistro, a.accion, a.valorAnterior, a.valorNuevo, a.fechaEvento, u.nombreUsuario
+from AuditoriaCompras a inner join Usuarios u on a.idUsuario = u.idUsuario;
+
+-- Propiedades de cada cliente
+create or replace view Vista_PropiedadesCliente as
+select
+    cli.idCliente,
+    cli.nombreCliente,
+    p.idPropiedad,
+    p.tipoPropiedad,
+    p.direccionPropiedad,
+    p.areaM2,
+    p.estadoPropiedad
+from Clientes cli
+inner join Propiedad p on p.idCliente = cli.idCliente;
+
+-- Certificados vigentes que vencen en 15 días o menos
+create or replace view Vista_CertificadosPorVencer as
+select
+    cert.idCertificado,
+    cli.nombreCliente,
+    cli.celularCliente,
+    cli.correoCliente,
+    pr.direccionPropiedad,
+    cert.fechaVencimiento,
+    datediff(cert.fechaVencimiento, curdate()) as diasRestantes
+from CertificadoFumigacion cert
+inner join ServicioDirecto s on cert.idServicio = s.idServicio
+inner join CitaFumigacion cit on s.idCita = cit.idCita
+inner join Propiedad pr on cit.idPropiedad = pr.idPropiedad
+inner join Clientes cli on pr.idCliente = cli.idCliente
+where cert.estadoVigencia = 'Vigente'
+  and cert.fechaVencimiento between curdate() and date_add(curdate(), interval 15 day);
+
+-- Catálogo de cada proveedor: insumos que vende y último precio pactado.
+-- Se arma a partir de las compras para no crear una relación
+-- Proveedor-Insumo que vuelva a generar un ciclo en el modelo.
+create or replace view Vista_CatalogoProveedor as
+select
+    prv.idProveedor,
+    prv.razonSocial,
+    i.idInsumoQuimico,
+    i.nombreInsumo,
+    i.unidadMedida,
+    d.precioUnitario as precioVigente,
+    oc.fechaCompra as fechaUltimoPrecio
+from DetalleOrdenCompra d
+inner join OrdenCompra oc on d.idCompra = oc.idCompra
+inner join Proveedor prv on oc.idProveedor = prv.idProveedor
+inner join InsumoQuimico i on d.idInsumoQuimico = i.idInsumoQuimico
+where oc.estadoCompra <> 'Cancelada'
+  and d.idDetalle = (
+      select d2.idDetalle
+      from DetalleOrdenCompra d2
+      inner join OrdenCompra oc2 on d2.idCompra = oc2.idCompra
+      where oc2.idProveedor = oc.idProveedor
+        and d2.idInsumoQuimico = d.idInsumoQuimico
+        and oc2.estadoCompra <> 'Cancelada'
+      order by oc2.fechaCompra desc, d2.idDetalle desc
+      limit 1
+  );
+
+-- Autonomía del inventario: consumo promedio mensual (últimos 90 días)
+-- y días que alcanza el stock actual a ese ritmo.
+create or replace view Vista_AutonomiaInventario as
+select
+    i.idInsumoQuimico,
+    i.nombreInsumo,
+    i.unidadMedida,
+    i.stockActual,
+    round(coalesce(sum(a.cantidad), 0) / 3, 2) as consumoMensualPromedio,
+    case
+        when coalesce(sum(a.cantidad), 0) = 0 then null
+        else floor(i.stockActual / (sum(a.cantidad) / 90))
+    end as diasAutonomia
+from InsumoQuimico i
+left join AjusteInventario a
+       on a.idInsumoQuimico = i.idInsumoQuimico
+      and a.tipoAjuste = 'Consumo Servicio'
+      and a.fechaAjuste >= date_sub(curdate(), interval 90 day)
+group by i.idInsumoQuimico, i.nombreInsumo, i.unidadMedida, i.stockActual;
+
+
+-- =====================================================================
+--  FUNCIÓN DE DISPONIBILIDAD
+--  Devuelve true si el técnico está libre en el rango [inicio, inicio + duración).
+--  Se usa en los triggers de citas (agendar y reprogramar).
+-- =====================================================================
+USE eficaz_fumigaciones;
+
+delimiter //
+create function fn_TecnicoDisponible(
+    p_idUsuario int,
+    p_inicio datetime,
+    p_duracionMin int,
+    p_idCitaExcluir int
+) returns boolean
+reads sql data
+begin
+    return not exists (
+        select 1
+        from CitaFumigacion c
+        where c.idUsuario = p_idUsuario
+          and c.estadoCita in ('Pendiente', 'En Camino')
+          and c.idCita <> coalesce(p_idCitaExcluir, 0)
+          and p_inicio < date_add(c.fechaHora, interval c.duracionEstimadaMin minute)
+          and date_add(p_inicio, interval p_duracionMin minute) > c.fechaHora
+    );
+end //
+delimiter ;
+
+
+-- =====================================================================
+--  CREACIÓN DE PROCEDIMIENTOS ALMACENADOS
+--  Todos reciben p_idUsuario: se guarda en la variable de sesión
+--  @idUsuarioActual, que los triggers leen para llenar las tablas de
+--  auditoría. Si nadie la define, los triggers usan el usuario 1 (Sistema).
+-- =====================================================================
+USE eficaz_fumigaciones;
+
+-- Procedimiento auxiliar: valida el usuario y lo deja como "usuario actual"
+delimiter //
+create procedure sp_ValidarUsuario(in p_idUsuario int)
+begin
+    if not exists (select 1 from Usuarios where idUsuario = p_idUsuario and estadoUsuario = 'Activo') then
+        signal sqlstate '45000'
+        set MESSAGE_TEXT = 'Error de Negocio: El usuario no existe o está inactivo.';
+    end if;
+    set @idUsuarioActual = p_idUsuario;
+end //
+delimiter ;
+
+
+-- SP 1: Registrar usuario
+delimiter //
+create procedure sp_RegistrarUsuario(
+    in p_nombre varchar(100),
+    in p_correo varchar(100),
+    in p_rol varchar(30)
+)
+begin
+    if exists (select 1 from Usuarios where correoUsuario = p_correo) then
+        signal sqlstate '45000'
+        set MESSAGE_TEXT = 'Error de Negocio: Ya existe un usuario con ese correo.';
+    else
+        insert into Usuarios (nombreUsuario, correoUsuario, rolUsuario)
+        values (p_nombre, p_correo, p_rol);
+    end if;
+end //
+delimiter ;
+
+
+-- SP 2: Registrar cliente (documento y correo únicos)
+delimiter //
+create procedure sp_RegistrarCliente(
+    in p_tipoDoc varchar(20),
+    in p_numDoc varchar(20),
+    in p_nombre varchar(100),
+    in p_celular varchar(20),
+    in p_telefono varchar(20),
+    in p_correo varchar(100),
+    in p_idUsuario int
+)
+begin
+    call sp_ValidarUsuario(p_idUsuario);
+
+    if exists (select 1 from Clientes where numDocumento = p_numDoc) then
+        signal sqlstate '45000'
+        set MESSAGE_TEXT = 'Error de Negocio: El número de documento ya se encuentra registrado.';
+    end if;
+    if exists (select 1 from Clientes where correoCliente = p_correo) then
+        signal sqlstate '45000'
+        set MESSAGE_TEXT = 'Error de Negocio: El correo ya está registrado por otro cliente.';
+    end if;
+
+    insert into Clientes (tipoDocumento, numDocumento, nombreCliente, celularCliente, telefonoCliente, correoCliente, estadoCliente)
+    values (p_tipoDoc, p_numDoc, p_nombre, p_celular, p_telefono, p_correo, 'Activo');
+
+    set @idUsuarioActual = null;
+end //
+delimiter ;
+
+
+-- SP 3: Actualizar datos de contacto (el documento no se puede cambiar)
+delimiter //
+create procedure sp_ActualizarContactoCliente(
+    in p_idCliente int,
+    in p_celular varchar(20),
+    in p_telefono varchar(20),
+    in p_correo varchar(100),
+    in p_idUsuario int
+)
+begin
+    call sp_ValidarUsuario(p_idUsuario);
+
+    if not exists (select 1 from Clientes where idCliente = p_idCliente) then
+        signal sqlstate '45000'
+        set MESSAGE_TEXT = 'Error de Negocio: El cliente no existe.';
+    end if;
+    if exists (select 1 from Clientes where correoCliente = p_correo and idCliente <> p_idCliente) then
+        signal sqlstate '45000'
+        set MESSAGE_TEXT = 'Error de Negocio: El correo ya está registrado por otro cliente.';
+    end if;
+
+    update Clientes
+    set celularCliente = coalesce(p_celular, celularCliente),
+        telefonoCliente = coalesce(p_telefono, telefonoCliente),
+        correoCliente = coalesce(p_correo, correoCliente)
+    where idCliente = p_idCliente;
+
+    set @idUsuarioActual = null;
+end //
+delimiter ;
+
+
+-- SP 4: Activar / inactivar cliente (los clientes NO se borran, se inactivan)
+delimiter //
+create procedure sp_CambiarEstadoCliente(
+    in p_idCliente int,
+    in p_nuevoEstado varchar(20),
+    in p_idUsuario int
+)
+begin
+    call sp_ValidarUsuario(p_idUsuario);
+
+    if p_nuevoEstado not in ('Activo', 'Inactivo') then
+        signal sqlstate '45000'
+        set MESSAGE_TEXT = 'Error de Negocio: El estado debe ser Activo o Inactivo.';
+    end if;
+    if not exists (select 1 from Clientes where idCliente = p_idCliente) then
+        signal sqlstate '45000'
+        set MESSAGE_TEXT = 'Error de Negocio: El cliente no existe.';
+    end if;
+
+    update Clientes set estadoCliente = p_nuevoEstado where idCliente = p_idCliente;
+    set @idUsuarioActual = null;
+end //
+delimiter ;
+
+
+-- SP 5: Acceso del cliente sin contraseña (solo con el correo registrado)
+delimiter //
+create procedure sp_AccesoCliente(in p_correo varchar(100))
+begin
+    if not exists (select 1 from Clientes where correoCliente = trim(p_correo) and estadoCliente = 'Activo') then
+        signal sqlstate '45000'
+        set MESSAGE_TEXT = 'Acceso denegado: el correo no corresponde a un cliente activo.';
+    end if;
+
+    select idCliente, nombreCliente, tipoDocumento, numDocumento, celularCliente, correoCliente
+    from Clientes
+    where correoCliente = trim(p_correo);
+end //
+delimiter ;
+
+
+-- SP 6: Buscador de clientes por nombre, documento o teléfono
+delimiter //
+create procedure sp_BuscarCliente(in p_texto varchar(100))
+begin
+    select idCliente, tipoDocumento, numDocumento, nombreCliente, celularCliente, telefonoCliente, correoCliente, estadoCliente
+    from Clientes
+    where nombreCliente like concat('%', p_texto, '%')
+       or numDocumento like concat(p_texto, '%')
+       or celularCliente like concat(p_texto, '%')
+       or telefonoCliente like concat(p_texto, '%')
+    order by nombreCliente;
+end //
+delimiter ;
+
+
+-- SP 7: Registrar propiedad de un cliente
+delimiter //
+create procedure sp_RegistrarPropiedad(
+    in p_idCliente int,
+    in p_tipoPropiedad varchar(50),
+    in p_direccion varchar(150),
+    in p_areaM2 decimal(10,2),
+    in p_idUsuario int,
+    out p_idPropiedad int
+)
+begin
+    call sp_ValidarUsuario(p_idUsuario);
+
+    if not exists (select 1 from Clientes where idCliente = p_idCliente and estadoCliente = 'Activo') then
+        signal sqlstate '45000'
+        set MESSAGE_TEXT = 'Error de Negocio: El cliente no existe o está inactivo.';
+    end if;
+    if p_areaM2 is not null and p_areaM2 <= 0 then
+        signal sqlstate '45000'
+        set MESSAGE_TEXT = 'Error de Negocio: El área debe ser mayor a cero.';
+    end if;
+
+    insert into Propiedad (tipoPropiedad, direccionPropiedad, areaM2, idCliente)
+    values (p_tipoPropiedad, p_direccion, p_areaM2, p_idCliente);
+
+    set p_idPropiedad = last_insert_id();
+    set @idUsuarioActual = null;
+end //
+delimiter ;
+
+
+-- SP 8: Agendar cita sobre una propiedad (el trigger valida el cruce de horario)
+delimiter //
+create procedure sp_AgendarCita(
+    in p_idPropiedad int,
+    in p_idTecnico int,
+    in p_fechaHora datetime,
+    in p_duracionMin int,
+    in p_tipoSolicitud varchar(50),
+    in p_observaciones varchar(255),
+    out p_idCita int
+)
+begin
+    call sp_ValidarUsuario(p_idTecnico);
+
+    insert into CitaFumigacion (fechaHora, estadoCita, tipoSolicitud, duracionEstimadaMin, observaciones, idPropiedad, idUsuario)
+    values (p_fechaHora, 'Pendiente', p_tipoSolicitud, coalesce(p_duracionMin, 60), p_observaciones, p_idPropiedad, p_idTecnico);
+
+    set p_idCita = last_insert_id();
+    set @idUsuarioActual = null;
+end //
+delimiter ;
+
+
+-- SP 9: Cambiar estado de una cita (Pendiente, En Camino, Realizado, Cancelado)
+delimiter //
+create procedure sp_CambiarEstadoCita(
+    in p_idCita int,
+    in p_nuevoEstado varchar(20),
+    in p_idUsuario int
+)
+begin
+    call sp_ValidarUsuario(p_idUsuario);
+
+    if not exists (select 1 from CitaFumigacion where idCita = p_idCita) then
+        signal sqlstate '45000'
+        set MESSAGE_TEXT = 'Error de Negocio: La cita no existe.';
+    end if;
+
+    update CitaFumigacion set estadoCita = p_nuevoEstado where idCita = p_idCita;
+    set @idUsuarioActual = null;
+end //
+delimiter ;
+
+
+-- SP 10: Reprogramar cita (el trigger verifica disponibilidad del técnico)
+delimiter //
+create procedure sp_ReprogramarCita(
+    in p_idCita int,
+    in p_nuevaFechaHora datetime,
+    in p_idUsuario int
+)
+begin
+    call sp_ValidarUsuario(p_idUsuario);
+
+    if not exists (select 1 from CitaFumigacion where idCita = p_idCita) then
+        signal sqlstate '45000'
+        set MESSAGE_TEXT = 'Error de Negocio: La cita no existe.';
+    end if;
+
+    update CitaFumigacion set fechaHora = p_nuevaFechaHora where idCita = p_idCita;
+    set @idUsuarioActual = null;
+end //
+delimiter ;
+
+
+-- SP 11: Cancelar cita
+delimiter //
+create procedure sp_CancelarCita(
+    in p_idCita int,
+    in p_idUsuario int
+)
+begin
+    call sp_ValidarUsuario(p_idUsuario);
+
+    if exists (select 1 from ServicioDirecto where idCita = p_idCita) then
+        signal sqlstate '45000'
+        set MESSAGE_TEXT = 'Error de Negocio: La cita ya tiene un servicio ejecutado, no se puede cancelar.';
+    end if;
+
+    update CitaFumigacion set estadoCita = 'Cancelado' where idCita = p_idCita;
+    set @idUsuarioActual = null;
+end //
+delimiter ;
+
+
+-- SP 12: Cotizar una visita después de la inspección
+-- (la visita se crea sola en $0 al agendar; aquí se registra lo medido)
+delimiter //
+create procedure sp_CotizarVisita(
+    in p_idCita int,
+    in p_areaMedidaM2 decimal(10,2),
+    in p_idPlaga int,
+    in p_observacion varchar(255),
+    in p_idUsuario int
+)
+begin
+    declare v_tarifa decimal(10,2);
+
+    call sp_ValidarUsuario(p_idUsuario);
+
+    if not exists (select 1 from VisitaCotizacion where idCita = p_idCita and estadoCotizacion = 'Por inspeccionar') then
+        signal sqlstate '45000'
+        set MESSAGE_TEXT = 'Error de Negocio: La cita no tiene una visita pendiente por cotizar.';
+    end if;
+    if p_areaMedidaM2 is null or p_areaMedidaM2 <= 0 then
+        signal sqlstate '45000'
+        set MESSAGE_TEXT = 'Error de Negocio: El área medida debe ser mayor a cero.';
+    end if;
+
+    select tarifaPorM2 into v_tarifa from Plaga where idPlaga = p_idPlaga;
+    if v_tarifa is null then
+        signal sqlstate '45000'
+        set MESSAGE_TEXT = 'Error de Negocio: La plaga indicada no existe.';
+    end if;
+
+    update VisitaCotizacion
+    set areaMedidaM2 = p_areaMedidaM2,
+        valorServicio = p_areaMedidaM2 * v_tarifa,
+        estadoCotizacion = 'Cotizada',
+        observacionInspeccion = p_observacion
+    where idCita = p_idCita;
+
+    -- El área medida queda guardada en la propiedad para futuros servicios
+    update Propiedad p
+    inner join CitaFumigacion c on c.idPropiedad = p.idPropiedad
+    set p.areaM2 = p_areaMedidaM2
+    where c.idCita = p_idCita;
+
+    update CitaFumigacion set estadoCita = 'Realizado' where idCita = p_idCita;
+    set @idUsuarioActual = null;
+end //
+delimiter ;
+
+
+-- SP 13: Registrar servicio directo (calcula costo y dosis; los triggers hacen el resto)
+-- Si no se envía el área, se toma la registrada en la propiedad.
+delimiter //
+create procedure sp_RegistrarServicio(
+    in p_idCita int,
+    in p_idPlaga int,
+    in p_areaM2 decimal(10,2),
+    in p_idUsuario int,
+    in p_detalle varchar(255),
+    out p_idServicio int
+)
+begin
+    declare v_tarifa decimal(10,2);
+    declare v_dosis decimal(10,2);
+    declare v_area decimal(10,2);
+
+    call sp_ValidarUsuario(p_idUsuario);
+
+    set v_area = p_areaM2;
+    if v_area is null then
+        select p.areaM2 into v_area
+        from CitaFumigacion c
+        inner join Propiedad p on c.idPropiedad = p.idPropiedad
+        where c.idCita = p_idCita;
+    end if;
+
+    if v_area is null or v_area <= 0 then
+        signal sqlstate '45000'
+        set MESSAGE_TEXT = 'Error de Negocio: Se debe indicar el área en m2 (mayor a cero).';
+    end if;
+    if exists (select 1 from ServicioDirecto where idCita = p_idCita) then
+        signal sqlstate '45000'
+        set MESSAGE_TEXT = 'Error de Negocio: Esa cita ya tiene un servicio registrado.';
+    end if;
+
+    select tarifaPorM2, dosisEstandarPorM2 into v_tarifa, v_dosis from Plaga where idPlaga = p_idPlaga;
+    if v_tarifa is null then
+        signal sqlstate '45000'
+        set MESSAGE_TEXT = 'Error de Negocio: Se debe indicar una plaga válida.';
+    end if;
+
+    insert into ServicioDirecto (costoTotal, dosisInsumo, areaM2, estadoServicio, detalleOperacion, idCita, idPlaga)
+    values (v_area * v_tarifa, v_area * v_dosis, v_area, true, p_detalle, p_idCita, p_idPlaga);
+
+    set p_idServicio = last_insert_id();
+    set @idUsuarioActual = null;
+end //
+delimiter ;
+
+
+-- SP 14: Emitir (o renovar) certificado de fumigación de forma manual
+delimiter //
+create procedure sp_EmitirCertificado(
+    in p_idServicio int,
+    in p_mesesVigencia int,
+    in p_idUsuario int,
+    out p_token varchar(30)
+)
+begin
+    call sp_ValidarUsuario(p_idUsuario);
+
+    if exists (select 1 from CertificadoFumigacion
+               where idServicio = p_idServicio and estadoVigencia = 'Vigente') then
+        signal sqlstate '45000'
+        set MESSAGE_TEXT = 'Error de Negocio: El servicio ya tiene un certificado vigente.';
+    end if;
+
+    set p_token = upper(left(sha2(concat(uuid(), rand()), 256), 30));
+
+    insert into CertificadoFumigacion (fechaEmision, fechaVencimiento, tokenEnlace, estadoVigencia, idServicio)
+    values (curdate(), date_add(curdate(), interval p_mesesVigencia month), p_token, 'Vigente', p_idServicio);
+
+    set @idUsuarioActual = null;
+end //
+delimiter ;
+
+
+-- SP 15: Marcar como vencidos los certificados cuya fecha ya pasó
+delimiter //
+create procedure sp_ActualizarVigenciaCertificados()
+begin
+    update CertificadoFumigacion
+    set estadoVigencia = 'Vencido'
+    where estadoVigencia = 'Vigente' and fechaVencimiento < curdate();
+
+    select row_count() as certificadosVencidos;
+end //
+delimiter ;
+
+
+-- SP 16: Registrar ajuste de inventario (único punto de entrada para mover stock)
+delimiter //
+create procedure sp_RegistrarAjusteInventario(
+    in p_idInsumo int,
+    in p_tipoAjuste varchar(50),
+    in p_cantidad decimal(10,2),
+    in p_justificacion varchar(255),
+    in p_idUsuario int
+)
+begin
+    call sp_ValidarUsuario(p_idUsuario);
+
+    insert into AjusteInventario (fechaAjuste, tipoAjuste, cantidad, justificacion, idInsumoQuimico)
+    values (curdate(), p_tipoAjuste, p_cantidad, p_justificacion, p_idInsumo);
+
+    set @idUsuarioActual = null;
+end //
+delimiter ;
+
+
+-- SP 17: Actualizar stock (positivo = entra, negativo = sale); siempre deja un ajuste
+delimiter //
+create procedure sp_ActualizarStockInsumo(
+    in p_idInsumo int,
+    in p_cantidadAjuste decimal(10,2),
+    in p_justificacion varchar(255),
+    in p_idUsuario int
+)
+begin
+    if p_cantidadAjuste = 0 then
+        signal sqlstate '45000'
+        set MESSAGE_TEXT = 'Error de Negocio: La cantidad del ajuste no puede ser cero.';
+    elseif p_cantidadAjuste > 0 then
+        call sp_RegistrarAjusteInventario(p_idInsumo, 'Entrada', p_cantidadAjuste, p_justificacion, p_idUsuario);
+    else
+        call sp_RegistrarAjusteInventario(p_idInsumo, 'Salida', abs(p_cantidadAjuste), p_justificacion, p_idUsuario);
+    end if;
+end //
+delimiter ;
+
+
+-- SP 18: Registrar proveedor (NIT único)
+delimiter //
+create procedure sp_RegistrarProveedor(
+    in p_nit varchar(20),
+    in p_razonSocial varchar(100),
+    in p_telefono varchar(20),
+    in p_correo varchar(100),
+    in p_ciudad varchar(50)
+)
+begin
+    if exists (select 1 from Proveedor where nit = p_nit) then
+        signal sqlstate '45000'
+        set MESSAGE_TEXT = 'Error de Negocio: Ya existe un proveedor con ese NIT.';
+    else
+        insert into Proveedor (nit, razonSocial, telefonoProveedor, correoProveedor, ciudadProveedor, estadoProveedor)
+        values (p_nit, p_razonSocial, p_telefono, p_correo, p_ciudad, 'Activo');
+    end if;
+end //
+delimiter ;
+
+
+-- SP 19: Consultar el catálogo de un proveedor
+delimiter //
+create procedure sp_CatalogoProveedor(in p_idProveedor int)
+begin
+    select nombreInsumo, unidadMedida, precioVigente, fechaUltimoPrecio
+    from Vista_CatalogoProveedor
+    where idProveedor = p_idProveedor
+    order by nombreInsumo;
+end //
+delimiter ;
+
+
+-- SP 20: Crear orden de compra (vacía; luego se agregan los detalles)
+delimiter //
+create procedure sp_CrearOrdenCompra(
+    in p_idProveedor int,
+    in p_detalle varchar(255),
+    in p_idUsuario int,
+    out p_idCompra int
+)
+begin
+    call sp_ValidarUsuario(p_idUsuario);
+
+    if not exists (select 1 from Proveedor where idProveedor = p_idProveedor and estadoProveedor = 'Activo') then
+        signal sqlstate '45000'
+        set MESSAGE_TEXT = 'Error de Negocio: El proveedor no existe o está inactivo.';
+    end if;
+
+    insert into OrdenCompra (fechaCompra, valorTotal, estadoCompra, detalleCompra, idProveedor)
+    values (curdate(), 0, 'Pendiente', p_detalle, p_idProveedor);
+
+    set p_idCompra = last_insert_id();
+    set @idUsuarioActual = null;
+end //
+delimiter ;
+
+
+-- SP 21: Agregar insumo a una orden. Si no se da precio, usa el del catálogo
+-- del proveedor y, si no hay, el precio de lista del insumo.
+delimiter //
+create procedure sp_AgregarDetalleOrden(
+    in p_idCompra int,
+    in p_idInsumo int,
+    in p_cantidad decimal(10,2),
+    in p_precioUnitario decimal(10,2),
+    in p_idUsuario int
+)
+begin
+    declare v_precio decimal(10,2);
+
+    call sp_ValidarUsuario(p_idUsuario);
+
+    if exists (select 1 from DetalleOrdenCompra where idCompra = p_idCompra and idInsumoQuimico = p_idInsumo) then
+        signal sqlstate '45000'
+        set MESSAGE_TEXT = 'Error de Negocio: Ese insumo ya está en la orden.';
+    end if;
+
+    set v_precio = p_precioUnitario;
+    if v_precio is null then
+        select vc.precioVigente into v_precio
+        from Vista_CatalogoProveedor vc
+        inner join OrdenCompra oc on oc.idProveedor = vc.idProveedor
+        where oc.idCompra = p_idCompra and vc.idInsumoQuimico = p_idInsumo;
+    end if;
+    if v_precio is null then
+        select precioListaActual into v_precio from InsumoQuimico where idInsumoQuimico = p_idInsumo;
+    end if;
+
+    insert into DetalleOrdenCompra (cantidad, precioUnitario, idCompra, idInsumoQuimico)
+    values (p_cantidad, v_precio, p_idCompra, p_idInsumo);
+
+    set @idUsuarioActual = null;
+end //
+delimiter ;
+
+
+-- SP 22: Recibir orden de compra (el trigger suma el stock de cada insumo)
+delimiter //
+create procedure sp_RecibirOrdenCompra(
+    in p_idCompra int,
+    in p_idUsuario int
+)
+begin
+    call sp_ValidarUsuario(p_idUsuario);
+
+    update OrdenCompra set estadoCompra = 'Recibida' where idCompra = p_idCompra;
+
+    set @idUsuarioActual = null;
+end //
+delimiter ;
+
+
+-- SP 23: Cancelar orden de compra
+delimiter //
+create procedure sp_CancelarOrdenCompra(
+    in p_idCompra int,
+    in p_idUsuario int
+)
+begin
+    call sp_ValidarUsuario(p_idUsuario);
+
+    update OrdenCompra set estadoCompra = 'Cancelada' where idCompra = p_idCompra;
+
+    set @idUsuarioActual = null;
+end //
+delimiter ;
+
+
+-- SP 24: Reporte de servicios en un rango de fechas
+delimiter //
+create procedure sp_ReporteServiciosPorFecha(
+    in p_fechaInicio date,
+    in p_fechaFin date
+)
+begin
+    select
+        s.idServicio,
+        s.fechaTransaccion,
+        cli.nombreCliente,
+        pr.direccionPropiedad,
+        p.nombrePlaga,
+        u.nombreUsuario as tecnico,
+        s.costoTotal
+    from ServicioDirecto s
+    inner join CitaFumigacion cit on s.idCita = cit.idCita
+    inner join Propiedad pr on cit.idPropiedad = pr.idPropiedad
+    inner join Clientes cli on pr.idCliente = cli.idCliente
+    inner join Usuarios u on cit.idUsuario = u.idUsuario
+    inner join Plaga p on s.idPlaga = p.idPlaga
+    where date(s.fechaTransaccion) between p_fechaInicio and p_fechaFin
+    order by s.fechaTransaccion;
+end //
+delimiter ;
+
+
+-- SP 25: Historial completo de un cliente (de la más reciente a la más antigua)
+-- con plaga tratada, químico aplicado, costo y certificado.
+delimiter //
+create procedure sp_HistorialCliente(in p_idCliente int)
+begin
+    select
+        cit.idCita,
+        cit.fechaHora,
+        cit.estadoCita,
+        cit.tipoSolicitud,
+        pr.direccionPropiedad,
+        s.idServicio,
+        p.nombrePlaga as plagaTratada,
+        i.nombreInsumo as quimicoAplicado,
+        s.dosisInsumo,
+        i.unidadMedida,
+        s.costoTotal,
+        cert.tokenEnlace,
+        cert.estadoVigencia
+    from CitaFumigacion cit
+    inner join Propiedad pr on cit.idPropiedad = pr.idPropiedad
+    left join ServicioDirecto s on s.idCita = cit.idCita
+    left join Plaga p on s.idPlaga = p.idPlaga
+    left join InsumoQuimico i on p.idInsumoQuimico = i.idInsumoQuimico
+    left join CertificadoFumigacion cert on cert.idServicio = s.idServicio
+    where pr.idCliente = p_idCliente
+    order by cit.fechaHora desc;
+end //
+delimiter ;
+
+
+-- SP 26: Insumos por debajo del stock mínimo con cantidad sugerida a comprar
+delimiter //
+create procedure sp_ReporteReabastecimiento()
+begin
+    select
+        idInsumoQuimico,
+        nombreInsumo,
+        stockActual,
+        stockMinimo,
+        (stockMinimo * 3 - stockActual) as cantidadSugeridaComprar
+    from InsumoQuimico
+    where stockActual <= stockMinimo;
+end //
+delimiter ;
+
+
+-- SP 27: Certificados próximos a vencer (por defecto 15 días)
+delimiter //
+create procedure sp_CertificadosPorVencer(in p_dias int)
+begin
+    select
+        cert.idCertificado,
+        cli.nombreCliente,
+        cli.celularCliente,
+        cli.correoCliente,
+        cert.fechaVencimiento,
+        datediff(cert.fechaVencimiento, curdate()) as diasRestantes
+    from CertificadoFumigacion cert
+    inner join ServicioDirecto s on cert.idServicio = s.idServicio
+    inner join CitaFumigacion cit on s.idCita = cit.idCita
+    inner join Propiedad pr on cit.idPropiedad = pr.idPropiedad
+    inner join Clientes cli on pr.idCliente = cli.idCliente
+    where cert.estadoVigencia = 'Vigente'
+      and cert.fechaVencimiento between curdate() and date_add(curdate(), interval coalesce(p_dias, 15) day)
+    order by cert.fechaVencimiento;
+end //
+delimiter ;
+
+
+-- SP 28: Ganancia neta en un rango de fechas
+-- (servicios cobrados - órdenes de compra recibidas)
+delimiter //
+create procedure sp_GananciaNeta(
+    in p_fechaInicio date,
+    in p_fechaFin date
+)
+begin
+    declare v_ingresos decimal(14,2);
+    declare v_compras decimal(14,2);
+
+    select coalesce(sum(costoTotal), 0) into v_ingresos
+    from ServicioDirecto
+    where estadoServicio = true
+      and date(fechaTransaccion) between p_fechaInicio and p_fechaFin;
+
+    select coalesce(sum(valorTotal), 0) into v_compras
+    from OrdenCompra
+    where estadoCompra = 'Recibida'
+      and fechaCompra between p_fechaInicio and p_fechaFin;
+
+    select p_fechaInicio as desde, p_fechaFin as hasta,
+           v_ingresos as ingresosServicios,
+           v_compras as costoCompras,
+           v_ingresos - v_compras as gananciaNeta;
+end //
+delimiter ;
+
+
+-- SP 29: Ranking Top 5 de plagas y de tipos de inmueble más atendidos en un mes
+delimiter //
+create procedure sp_RankingServicios(in p_anio int, in p_mes int)
+begin
+    select p.nombrePlaga, count(*) as serviciosRealizados, sum(s.costoTotal) as ingresos
+    from ServicioDirecto s
+    inner join Plaga p on s.idPlaga = p.idPlaga
+    where year(s.fechaTransaccion) = p_anio and month(s.fechaTransaccion) = p_mes
+    group by p.nombrePlaga
+    order by serviciosRealizados desc, ingresos desc
+    limit 5;
+
+    select pr.tipoPropiedad, count(*) as serviciosRealizados, sum(s.costoTotal) as ingresos
+    from ServicioDirecto s
+    inner join CitaFumigacion cit on s.idCita = cit.idCita
+    inner join Propiedad pr on cit.idPropiedad = pr.idPropiedad
+    where year(s.fechaTransaccion) = p_anio and month(s.fechaTransaccion) = p_mes
+    group by pr.tipoPropiedad
+    order by serviciosRealizados desc, ingresos desc
+    limit 5;
+end //
+delimiter ;
+
+
+-- Evento diario: actualiza la vigencia de los certificados
+-- (requiere SET GLOBAL event_scheduler = ON en el servidor)
+create event if not exists evt_VigenciaCertificadosDiaria
+on schedule every 1 day starts (curdate() + interval 1 day)
+do
+    update CertificadoFumigacion
+    set estadoVigencia = 'Vencido'
+    where estadoVigencia = 'Vigente' and fechaVencimiento < curdate();
+
+
+-- =====================================================================
+--  TRIGGERS
+-- =====================================================================
+USE eficaz_fumigaciones;
+
+-- ---------- INVENTARIO ----------
+
+-- TRIGGER 1: No permitir ajustes que dejen el stock en negativo
+delimiter //
+create trigger trg_ValidarStockAjuste
+before insert on AjusteInventario
+for each row
+begin
+    declare v_stock decimal(10,2);
+
+    if new.tipoAjuste in ('Salida', 'Consumo Servicio', 'Merma') then
+        select stockActual into v_stock
+        from InsumoQuimico
+        where idInsumoQuimico = new.idInsumoQuimico;
+
+        if v_stock < new.cantidad then
+            signal sqlstate '45000'
+            set MESSAGE_TEXT = 'Error de Negocio: Stock insuficiente para realizar el ajuste.';
+        end if;
+    end if;
+end //
+delimiter ;
+
+
+-- TRIGGER 2: Cada ajuste mueve el stock (suma o resta según el tipo)
+delimiter //
+create trigger trg_AplicarAjusteStock
+after insert on AjusteInventario
+for each row
+begin
+    if new.tipoAjuste in ('Entrada', 'Compra Recibida') then
+        update InsumoQuimico
+        set stockActual = stockActual + new.cantidad
+        where idInsumoQuimico = new.idInsumoQuimico;
+    else
+        update InsumoQuimico
+        set stockActual = stockActual - new.cantidad
+        where idInsumoQuimico = new.idInsumoQuimico;
+    end if;
+end //
+delimiter ;
+
+
+-- TRIGGER 3: El estado del insumo se actualiza solo según su stock
+delimiter //
+create trigger trg_ActualizarEstadoInsumo
+before update on InsumoQuimico
+for each row
+begin
+    if new.estadoInsumo in ('Disponible', 'Stock Bajo', 'Agotado') then
+        if new.stockActual = 0 then
+            set new.estadoInsumo = 'Agotado';
+        elseif new.stockActual <= new.stockMinimo then
+            set new.estadoInsumo = 'Stock Bajo';
+        else
+            set new.estadoInsumo = 'Disponible';
+        end if;
+    end if;
+end //
+delimiter ;
+
+
+-- TRIGGER 4: Auditoría de cambios de stock, precio y estado de insumos
+delimiter //
+create trigger trg_AuditoriaInsumoUpdate
+after update on InsumoQuimico
+for each row
+begin
+    if old.stockActual <> new.stockActual then
+        insert into AuditoriaInventario (idRegistro, accion, valorAnterior, valorNuevo, idUsuario)
+        values (new.idInsumoQuimico, 'CAMBIO_STOCK',
+                concat('stock=', old.stockActual), concat('stock=', new.stockActual),
+                coalesce(@idUsuarioActual, 1));
+    end if;
+
+    if old.precioListaActual <> new.precioListaActual then
+        insert into AuditoriaInventario (idRegistro, accion, valorAnterior, valorNuevo, idUsuario)
+        values (new.idInsumoQuimico, 'CAMBIO_PRECIO',
+                concat('precio=', old.precioListaActual), concat('precio=', new.precioListaActual),
+                coalesce(@idUsuarioActual, 1));
+    end if;
+
+    if old.estadoInsumo <> new.estadoInsumo then
+        insert into AuditoriaInventario (idRegistro, accion, valorAnterior, valorNuevo, idUsuario)
+        values (new.idInsumoQuimico, 'CAMBIO_ESTADO',
+                concat('estado=', old.estadoInsumo), concat('estado=', new.estadoInsumo),
+                coalesce(@idUsuarioActual, 1));
+    end if;
+end //
+delimiter ;
+
+
+-- ---------- SERVICIOS ----------
+
+-- TRIGGER 5: Validar el servicio (cita válida, de tipo servicio directo y cliente activo)
+delimiter //
+create trigger trg_ValidarServicio
+before insert on ServicioDirecto
+for each row
+begin
+    declare v_estadoCita varchar(20);
+    declare v_tipo varchar(50);
+    declare v_estadoCliente varchar(20);
+
+    select cit.estadoCita, cit.tipoSolicitud, cli.estadoCliente
+    into v_estadoCita, v_tipo, v_estadoCliente
+    from CitaFumigacion cit
+    inner join Propiedad pr on cit.idPropiedad = pr.idPropiedad
+    inner join Clientes cli on pr.idCliente = cli.idCliente
+    where cit.idCita = new.idCita;
+
+    if v_estadoCita is null then
+        signal sqlstate '45000'
+        set MESSAGE_TEXT = 'Error de Negocio: La cita indicada no existe.';
+    end if;
+    if v_tipo <> 'Servicio Directo' then
+        signal sqlstate '45000'
+        set MESSAGE_TEXT = 'Error de Negocio: La cita es de visita de cotización; agende una cita de servicio directo.';
+    end if;
+    if v_estadoCita = 'Cancelado' then
+        signal sqlstate '45000'
+        set MESSAGE_TEXT = 'Error de Negocio: No se puede registrar un servicio sobre una cita cancelada.';
+    end if;
+    if v_estadoCliente <> 'Activo' then
+        signal sqlstate '45000'
+        set MESSAGE_TEXT = 'Error de Negocio: El cliente está inactivo.';
+    end if;
+end //
+delimiter ;
+
+
+-- TRIGGER 6: Descuento automático de insumos al ejecutar un servicio
+-- (inserta un ajuste 'Consumo Servicio'; el trigger 2 es quien resta el stock)
+delimiter //
+create trigger trg_DescontarStockServicio
+after insert on ServicioDirecto
+for each row
+begin
+    if new.dosisInsumo > 0 then
+        insert into AjusteInventario (fechaAjuste, tipoAjuste, cantidad, justificacion, detalleAjuste, idInsumoQuimico)
+        select
+            curdate(),
+            'Consumo Servicio',
+            new.dosisInsumo,
+            concat('Descuento automático por servicio #', new.idServicio),
+            concat('Plaga tratada: ', p.nombrePlaga),
+            p.idInsumoQuimico
+        from Plaga p
+        where p.idPlaga = new.idPlaga;
+    end if;
+end //
+delimiter ;
+
+
+-- TRIGGER 7: Al registrar el servicio, la cita pasa a 'Realizado'
+delimiter //
+create trigger trg_CompletarCitaServicio
+after insert on ServicioDirecto
+for each row
+begin
+    update CitaFumigacion
+    set estadoCita = 'Realizado'
+    where idCita = new.idCita and estadoCita <> 'Realizado';
+end //
+delimiter ;
+
+
+-- TRIGGER 8: Al registrar el servicio se genera el certificado (6 meses de vigencia)
+delimiter //
+create trigger trg_GenerarCertificadoServicio
+after insert on ServicioDirecto
+for each row
+begin
+    insert into CertificadoFumigacion (fechaEmision, fechaVencimiento, tokenEnlace, estadoVigencia, idServicio)
+    values (curdate(), date_add(curdate(), interval 6 month),
+            upper(left(sha2(concat(uuid(), rand(), new.idServicio), 256), 30)),
+            'Vigente', new.idServicio);
+end //
+delimiter ;
+
+
+-- TRIGGER 9: Auditoría de creación de servicios
+delimiter //
+create trigger trg_AuditoriaServicioInsert
+after insert on ServicioDirecto
+for each row
+begin
+    insert into AuditoriaServicios (idRegistro, accion, valorAnterior, valorNuevo, idUsuario)
+    values (new.idServicio, 'CREAR', null,
+            concat('costo=', new.costoTotal, '; dosis=', new.dosisInsumo, '; area=', new.areaM2,
+                   '; plaga=', new.idPlaga, '; cita=', new.idCita),
+            coalesce(@idUsuarioActual, 1));
+end //
+delimiter ;
+
+
+-- TRIGGER 10: Auditoría de cambios en servicios (costo o estado)
+delimiter //
+create trigger trg_AuditoriaServicioUpdate
+after update on ServicioDirecto
+for each row
+begin
+    if old.costoTotal <> new.costoTotal or old.estadoServicio <> new.estadoServicio then
+        insert into AuditoriaServicios (idRegistro, accion, valorAnterior, valorNuevo, idUsuario)
+        values (new.idServicio, 'ACTUALIZAR',
+                concat('costo=', old.costoTotal, '; estado=', old.estadoServicio),
+                concat('costo=', new.costoTotal, '; estado=', new.estadoServicio),
+                coalesce(@idUsuarioActual, 1));
+    end if;
+end //
+delimiter ;
+
+
+-- ---------- CITAS ----------
+
+-- TRIGGER 11: Validar cita nueva (cliente y propiedad activos, fecha futura,
+-- técnico activo y sin cruce de horario con otra cita)
+delimiter //
+create trigger trg_ValidarCita
+before insert on CitaFumigacion
+for each row
+begin
+    declare v_estadoCliente varchar(20);
+    declare v_estadoPropiedad varchar(20);
+    declare v_estadoUsuario varchar(20);
+    declare v_rolUsuario varchar(30);
+
+    select cli.estadoCliente, p.estadoPropiedad into v_estadoCliente, v_estadoPropiedad
+    from Propiedad p
+    inner join Clientes cli on p.idCliente = cli.idCliente
+    where p.idPropiedad = new.idPropiedad;
+
+    if v_estadoCliente is null or v_estadoCliente <> 'Activo' or v_estadoPropiedad <> 'Activa' then
+        signal sqlstate '45000'
+        set MESSAGE_TEXT = 'Error de Negocio: La propiedad no existe o el cliente está inactivo.';
+    end if;
+
+    if new.fechaHora < now() then
+        signal sqlstate '45000'
+        set MESSAGE_TEXT = 'Error de Negocio: No se puede agendar una cita en el pasado.';
+    end if;
+
+    select estadoUsuario, rolUsuario into v_estadoUsuario, v_rolUsuario
+    from Usuarios where idUsuario = new.idUsuario;
+    if v_estadoUsuario is null or v_estadoUsuario <> 'Activo' or v_rolUsuario not in ('Técnico', 'Administrador') then
+        signal sqlstate '45000'
+        set MESSAGE_TEXT = 'Error de Negocio: El responsable de la cita debe ser un técnico activo.';
+    end if;
+
+    if not fn_TecnicoDisponible(new.idUsuario, new.fechaHora, new.duracionEstimadaMin, null) then
+        signal sqlstate '45000'
+        set MESSAGE_TEXT = 'Error de Negocio: El técnico ya tiene una cita en ese rango de horario.';
+    end if;
+end //
+delimiter ;
+
+
+-- TRIGGER 12: Al agendar una visita de cotización se crea su registro en $0
+delimiter //
+create trigger trg_CrearVisitaPendiente
+after insert on CitaFumigacion
+for each row
+begin
+    if new.tipoSolicitud = 'Visita Cotización' then
+        insert into VisitaCotizacion (valorServicio, areaMedidaM2, estadoCotizacion, idCita)
+        values (0.00, null, 'Por inspeccionar', new.idCita);
+    end if;
+end //
+delimiter ;
+
+
+-- TRIGGER 13: Controlar cambios de la cita
+--  - Una cita Realizada o Cancelada ya no cambia de estado.
+--  - Solo pasa a 'Realizado' si tiene servicio registrado o visita cotizada.
+--  - Reprogramar: solo citas pendientes/en camino, a futuro y sin cruces.
+delimiter //
+create trigger trg_ValidarCambioCita
+before update on CitaFumigacion
+for each row
+begin
+    if old.estadoCita in ('Realizado', 'Cancelado') and new.estadoCita <> old.estadoCita then
+        signal sqlstate '45000'
+        set MESSAGE_TEXT = 'Error de Negocio: Una cita realizada o cancelada no puede cambiar de estado.';
+    end if;
+
+    if new.estadoCita = 'Realizado' and old.estadoCita <> 'Realizado' then
+        if new.tipoSolicitud = 'Servicio Directo'
+           and not exists (select 1 from ServicioDirecto where idCita = new.idCita) then
+            signal sqlstate '45000'
+            set MESSAGE_TEXT = 'Error de Negocio: No se puede cerrar la cita sin registrar el servicio (plaga y m2).';
+        end if;
+        if new.tipoSolicitud = 'Visita Cotización'
+           and not exists (select 1 from VisitaCotizacion where idCita = new.idCita and estadoCotizacion = 'Cotizada') then
+            signal sqlstate '45000'
+            set MESSAGE_TEXT = 'Error de Negocio: No se puede cerrar la visita sin registrar el área medida y el valor.';
+        end if;
+    end if;
+
+    if new.fechaHora <> old.fechaHora or new.duracionEstimadaMin <> old.duracionEstimadaMin then
+        if old.estadoCita not in ('Pendiente', 'En Camino') then
+            signal sqlstate '45000'
+            set MESSAGE_TEXT = 'Error de Negocio: Solo se pueden reprogramar citas pendientes o en camino.';
+        end if;
+        if new.fechaHora < now() then
+            signal sqlstate '45000'
+            set MESSAGE_TEXT = 'Error de Negocio: No se puede reprogramar a una fecha pasada.';
+        end if;
+        if not fn_TecnicoDisponible(new.idUsuario, new.fechaHora, new.duracionEstimadaMin, new.idCita) then
+            signal sqlstate '45000'
+            set MESSAGE_TEXT = 'Error de Negocio: El técnico no está disponible en el nuevo horario.';
+        end if;
+    end if;
+end //
+delimiter ;
+
+
+-- TRIGGER 14: Solo las citas de cotización pueden tener visita
+delimiter //
+create trigger trg_ValidarVisita
+before insert on VisitaCotizacion
+for each row
+begin
+    if not exists (select 1 from CitaFumigacion
+                   where idCita = new.idCita and tipoSolicitud = 'Visita Cotización') then
+        signal sqlstate '45000'
+        set MESSAGE_TEXT = 'Error de Negocio: La cita no es de tipo Visita Cotización.';
+    end if;
+end //
+delimiter ;
+
+
+-- ---------- CLIENTES ----------
+
+-- TRIGGER 15: Auditoría de nuevos clientes
+delimiter //
+create trigger trg_AuditoriaClienteInsert
+after insert on Clientes
+for each row
+begin
+    insert into AuditoriaClientes (idRegistro, accion, valorAnterior, valorNuevo, idUsuario)
+    values (new.idCliente, 'CREAR', null,
+            concat('doc=', new.numDocumento, '; nombre=', new.nombreCliente, '; celular=', new.celularCliente, '; correo=', new.correoCliente),
+            coalesce(@idUsuarioActual, 1));
+end //
+delimiter ;
+
+
+-- TRIGGER 16: El documento del cliente no se puede modificar
+delimiter //
+create trigger trg_BloquearDocumentoCliente
+before update on Clientes
+for each row
+begin
+    if not (old.numDocumento <=> new.numDocumento and old.tipoDocumento <=> new.tipoDocumento) then
+        signal sqlstate '45000'
+        set MESSAGE_TEXT = 'Error de Negocio: El documento de identidad del cliente no se puede modificar.';
+    end if;
+end //
+delimiter ;
+
+
+-- TRIGGER 17: Auditoría de cambios en datos de clientes
+delimiter //
+create trigger trg_AuditoriaClienteUpdate
+after update on Clientes
+for each row
+begin
+    if not (old.nombreCliente <=> new.nombreCliente
+        and old.celularCliente <=> new.celularCliente
+        and old.telefonoCliente <=> new.telefonoCliente
+        and old.correoCliente <=> new.correoCliente
+        and old.estadoCliente <=> new.estadoCliente) then
+        insert into AuditoriaClientes (idRegistro, accion, valorAnterior, valorNuevo, idUsuario)
+        values (new.idCliente, 'ACTUALIZAR',
+                concat('nombre=', old.nombreCliente, '; celular=', old.celularCliente, '; telefono=', coalesce(old.telefonoCliente, ''),
+                       '; correo=', old.correoCliente, '; estado=', old.estadoCliente),
+                concat('nombre=', new.nombreCliente, '; celular=', new.celularCliente, '; telefono=', coalesce(new.telefonoCliente, ''),
+                       '; correo=', new.correoCliente, '; estado=', new.estadoCliente),
+                coalesce(@idUsuarioActual, 1));
+    end if;
+end //
+delimiter ;
+
+
+-- TRIGGER 18: Los clientes no se eliminan, se inactivan (conserva el historial)
+delimiter //
+create trigger trg_ImpedirEliminarCliente
+before delete on Clientes
+for each row
+begin
+    signal sqlstate '45000'
+    set MESSAGE_TEXT = 'Error de Negocio: Los clientes no se eliminan; cambie su estado a Inactivo.';
+end //
+delimiter ;
+
+
+-- ---------- CERTIFICADOS ----------
+
+-- TRIGGER 19: Validar certificado (fechas coherentes y servicio activo)
+delimiter //
+create trigger trg_ValidarCertificado
+before insert on CertificadoFumigacion
+for each row
+begin
+    declare v_estadoServicio boolean;
+
+    if new.fechaVencimiento <= new.fechaEmision then
+        signal sqlstate '45000'
+        set MESSAGE_TEXT = 'Error de Negocio: La fecha de vencimiento debe ser posterior a la de emisión.';
+    end if;
+
+    select estadoServicio into v_estadoServicio from ServicioDirecto where idServicio = new.idServicio;
+    if v_estadoServicio is null or v_estadoServicio = false then
+        signal sqlstate '45000'
+        set MESSAGE_TEXT = 'Error de Negocio: No se puede certificar un servicio inexistente o anulado.';
+    end if;
+end //
+delimiter ;
+
+
+-- ---------- COMPRAS ----------
+
+-- TRIGGER 20: Solo se pueden agregar detalles a órdenes pendientes de proveedores activos
+delimiter //
+create trigger trg_ValidarDetalleOrden
+before insert on DetalleOrdenCompra
+for each row
+begin
+    declare v_estadoOrden varchar(20);
+    declare v_estadoProv varchar(20);
+
+    select oc.estadoCompra, p.estadoProveedor into v_estadoOrden, v_estadoProv
+    from OrdenCompra oc
+    inner join Proveedor p on oc.idProveedor = p.idProveedor
+    where oc.idCompra = new.idCompra;
+
+    if v_estadoOrden is null or v_estadoOrden <> 'Pendiente' then
+        signal sqlstate '45000'
+        set MESSAGE_TEXT = 'Error de Negocio: Solo se pueden agregar insumos a órdenes pendientes.';
+    end if;
+    if v_estadoProv <> 'Activo' then
+        signal sqlstate '45000'
+        set MESSAGE_TEXT = 'Error de Negocio: El proveedor está inactivo.';
+    end if;
+end //
+delimiter ;
+
+
+-- TRIGGERS 21, 22 y 23: El valorTotal de la orden se recalcula solo con su detalle
+delimiter //
+create trigger trg_RecalcularTotal_Insert
+after insert on DetalleOrdenCompra
+for each row
+begin
+    update OrdenCompra
+    set valorTotal = (select coalesce(sum(cantidad * precioUnitario), 0)
+                      from DetalleOrdenCompra where idCompra = new.idCompra)
+    where idCompra = new.idCompra;
+end //
+delimiter ;
+
+delimiter //
+create trigger trg_RecalcularTotal_Update
+after update on DetalleOrdenCompra
+for each row
+begin
+    update OrdenCompra
+    set valorTotal = (select coalesce(sum(cantidad * precioUnitario), 0)
+                      from DetalleOrdenCompra where idCompra = new.idCompra)
+    where idCompra = new.idCompra;
+end //
+delimiter ;
+
+delimiter //
+create trigger trg_RecalcularTotal_Delete
+after delete on DetalleOrdenCompra
+for each row
+begin
+    update OrdenCompra
+    set valorTotal = (select coalesce(sum(cantidad * precioUnitario), 0)
+                      from DetalleOrdenCompra where idCompra = old.idCompra)
+    where idCompra = old.idCompra;
+end //
+delimiter ;
+
+
+-- TRIGGER 24: Validar cambios de estado de la orden de compra
+delimiter //
+create trigger trg_ValidarEstadoOrden
+before update on OrdenCompra
+for each row
+begin
+    if old.estadoCompra in ('Recibida', 'Cancelada') and new.estadoCompra <> old.estadoCompra then
+        signal sqlstate '45000'
+        set MESSAGE_TEXT = 'Error de Negocio: Una orden recibida o cancelada no puede cambiar de estado.';
+    end if;
+
+    if new.estadoCompra = 'Recibida' and old.estadoCompra <> 'Recibida'
+       and not exists (select 1 from DetalleOrdenCompra where idCompra = new.idCompra) then
+        signal sqlstate '45000'
+        set MESSAGE_TEXT = 'Error de Negocio: No se puede recibir una orden sin insumos.';
+    end if;
+end //
+delimiter ;
+
+
+-- TRIGGER 25: Al recibir una orden, el stock de cada insumo aumenta automáticamente
+delimiter //
+create trigger trg_RecibirOrdenCompra
+after update on OrdenCompra
+for each row
+begin
+    if old.estadoCompra = 'Pendiente' and new.estadoCompra = 'Recibida' then
+        insert into AjusteInventario (fechaAjuste, tipoAjuste, cantidad, justificacion, detalleAjuste, idInsumoQuimico)
+        select
+            curdate(),
+            'Compra Recibida',
+            d.cantidad,
+            concat('Ingreso por orden de compra #', new.idCompra),
+            concat('Precio unitario: ', d.precioUnitario),
+            d.idInsumoQuimico
+        from DetalleOrdenCompra d
+        where d.idCompra = new.idCompra;
+    end if;
+end //
+delimiter ;
+
+
+-- TRIGGER 26: Auditoría de creación de órdenes de compra
+delimiter //
+create trigger trg_AuditoriaOrdenCompraInsert
+after insert on OrdenCompra
+for each row
+begin
+    insert into AuditoriaCompras (idRegistro, accion, valorAnterior, valorNuevo, idUsuario)
+    values (new.idCompra, 'CREAR', null,
+            concat('proveedor=', new.idProveedor, '; estado=', new.estadoCompra, '; valor=', new.valorTotal),
+            coalesce(@idUsuarioActual, 1));
+end //
+delimiter ;
+
+
+-- TRIGGER 27: Auditoría de cambios de estado o valor en órdenes de compra
+delimiter //
+create trigger trg_AuditoriaOrdenCompraUpdate
+after update on OrdenCompra
+for each row
+begin
+    if old.estadoCompra <> new.estadoCompra or old.valorTotal <> new.valorTotal then
+        insert into AuditoriaCompras (idRegistro, accion, valorAnterior, valorNuevo, idUsuario)
+        values (new.idCompra, 'ACTUALIZAR',
+                concat('estado=', old.estadoCompra, '; valor=', old.valorTotal),
+                concat('estado=', new.estadoCompra, '; valor=', new.valorTotal),
+                coalesce(@idUsuarioActual, 1));
+    end if;
+end //
+delimiter ;

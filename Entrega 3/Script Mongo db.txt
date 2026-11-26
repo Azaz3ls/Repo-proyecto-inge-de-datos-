@@ -1,0 +1,257 @@
+db.dropDatabase();
+
+// 1. USUARIOS
+db.usuarios.insertMany([
+  { _id: 1, nombreUsuario: "Sistema Automático", correoUsuario: "sistema@eficaz.com", rolUsuario: "Sistema", estadoUsuario: "Activo", fechaCreacion: new Date("2026-09-01T08:00:00Z") },
+  { _id: 2, nombreUsuario: "Camilo Forero", correoUsuario: "camilo.forero@eficaz.com", rolUsuario: "Técnico", estadoUsuario: "Activo", fechaCreacion: new Date("2026-09-01T08:00:00Z") },
+  { _id: 3, nombreUsuario: "Administrador General", correoUsuario: "admin@eficaz.com", rolUsuario: "Administrador", estadoUsuario: "Activo", fechaCreacion: new Date("2026-09-01T08:00:00Z") },
+  { _id: 4, nombreUsuario: "Responsable de Inventario", correoUsuario: "inventario@eficaz.com", rolUsuario: "Inventario", estadoUsuario: "Activo", fechaCreacion: new Date("2026-09-01T08:00:00Z") },
+  { _id: 5, nombreUsuario: "Responsable de Compras", correoUsuario: "compras@eficaz.com", rolUsuario: "Compras", estadoUsuario: "Activo", fechaCreacion: new Date("2026-09-01T08:00:00Z") },
+  { _id: 6, nombreUsuario: "Laura Jiménez", correoUsuario: "laura.jimenez@eficaz.com", rolUsuario: "Técnico", estadoUsuario: "Activo", fechaCreacion: new Date("2026-09-01T08:00:00Z") }
+]);
+
+// 2. CLIENTES + PROPIEDADES INCRUSTADAS
+const clientesBase = [
+  { _id: 1, tipoDocumento: "CC", numDocumento: "1018400111", nombreCliente: "Carlos Mendoza", celularCliente: "3209998877", telefonoCliente: null, correoCliente: "carlos.mendoza@gmail.com", estadoCliente: "Activo", propiedades: [{ idPropiedad: 1, tipoPropiedad: "Casa", direccionPropiedad: "Calle 11 # 8-17, Bogotá", areaM2: 100.00, estadoPropiedad: "Activa" }] },
+  { _id: 2, tipoDocumento: "NIT", numDocumento: "900123456-1", nombreCliente: "Restaurante El Sabor", celularCliente: "3159876543", telefonoCliente: "6012345678", correoCliente: "contacto@elsabor.com", estadoCliente: "Activo", propiedades: [
+    { idPropiedad: 2, tipoPropiedad: "Restaurante", direccionPropiedad: "Calle 12 # 11-24, Bogotá", areaM2: 100.00, estadoPropiedad: "Activa" },
+    { idPropiedad: 51, tipoPropiedad: "Local Comercial", direccionPropiedad: "Calle 45 # 13-20, Bogotá", areaM2: 200.00, estadoPropiedad: "Activa" }
+  ]},
+  { _id: 3, tipoDocumento: "CC", numDocumento: "52890123", nombreCliente: "Martha Gómez", celularCliente: "3004567890", telefonoCliente: null, correoCliente: "martha.gomez@gmail.com", estadoCliente: "Activo", propiedades: [
+    { idPropiedad: 3, tipoPropiedad: "Casa", direccionPropiedad: "Carrera 13 # 14-31, Bogotá", areaM2: 100.00, estadoPropiedad: "Activa" },
+    { idPropiedad: 55, tipoPropiedad: "Casa", direccionPropiedad: "Calle 63 # 24-11, Bogotá", areaM2: 80.00, estadoPropiedad: "Activa" }
+  ]},
+  { _id: 4, tipoDocumento: "CC", numDocumento: "1020789456", nombreCliente: "Andrés Rocha", celularCliente: "3123456789", telefonoCliente: null, correoCliente: "andres.rocha@gmail.com", estadoCliente: "Activo", propiedades: [{ idPropiedad: 4, tipoPropiedad: "Apartamento", direccionPropiedad: "Calle 14 # 17-38, Bogotá", areaM2: 100.00, estadoPropiedad: "Activa" }] },
+  { _id: 5, tipoDocumento: "NIT", numDocumento: "800555444-2", nombreCliente: "Panadería Central", celularCliente: "3186549870", telefonoCliente: null, correoCliente: "administracion@pancentral.com", estadoCliente: "Activo", propiedades: [
+    { idPropiedad: 5, tipoPropiedad: "Local Comercial", direccionPropiedad: "Calle 15 # 20-45, Bogotá", areaM2: 100.00, estadoPropiedad: "Activa" },
+    { idPropiedad: 52, tipoPropiedad: "Local Comercial", direccionPropiedad: "Carrera 7 # 72-10, Bogotá", areaM2: 175.00, estadoPropiedad: "Activa" }
+  ]},
+  { _id: 6, tipoDocumento: "CC", numDocumento: "1032456789", nombreCliente: "Luisa Fernanda Paez", celularCliente: "3019876543", telefonoCliente: null, correoCliente: "luisa.paez@gmail.com", estadoCliente: "Activo", propiedades: [{ idPropiedad: 6, tipoPropiedad: "Apartamento", direccionPropiedad: "Carrera 16 # 23-52, Bogotá", areaM2: 100.00, estadoPropiedad: "Activa" }] },
+  { _id: 7, tipoDocumento: "NIT", numDocumento: "901234888-3", nombreCliente: "Hotel Plaza Real", celularCliente: "3174561230", telefonoCliente: "6017654321", correoCliente: "gerencia@hotelplazareal.com", estadoCliente: "Activo", propiedades: [
+    { idPropiedad: 7, tipoPropiedad: "Hotel", direccionPropiedad: "Calle 17 # 26-59, Bogotá", areaM2: 100.00, estadoPropiedad: "Activa" },
+    { idPropiedad: 53, tipoPropiedad: "Hotel", direccionPropiedad: "Calle 100 # 15-30, Bogotá", areaM2: 450.00, estadoPropiedad: "Activa" }
+  ]},
+  { _id: 8, tipoDocumento: "CC", numDocumento: "80123456", nombreCliente: "Jorge Enrique Bustos", celularCliente: "3112223344", telefonoCliente: null, correoCliente: "jorge.bustos@gmail.com", estadoCliente: "Activo", propiedades: [{ idPropiedad: 8, tipoPropiedad: "Casa", direccionPropiedad: "Calle 18 # 29-66, Bogotá", areaM2: 100.00, estadoPropiedad: "Activa" }] },
+  { _id: 9, tipoDocumento: "CC", numDocumento: "1015678901", nombreCliente: "Diana Marcela Torres", celularCliente: "3145556677", telefonoCliente: null, correoCliente: "diana.torres@gmail.com", estadoCliente: "Activo", propiedades: [{ idPropiedad: 9, tipoPropiedad: "Apartamento", direccionPropiedad: "Carrera 19 # 32-73, Bogotá", areaM2: 100.00, estadoPropiedad: "Activa" }] },
+  { _id: 10, tipoDocumento: "NIT", numDocumento: "830111222-5", nombreCliente: "Colegio San José", celularCliente: "3208889900", telefonoCliente: "6013456789", correoCliente: "rectoria@sanjose.edu.co", estadoCliente: "Activo", propiedades: [
+    { idPropiedad: 10, tipoPropiedad: "Institución Educativa", direccionPropiedad: "Calle 20 # 35-80, Bogotá", areaM2: 100.00, estadoPropiedad: "Activa" },
+    { idPropiedad: 54, tipoPropiedad: "Institución Educativa", direccionPropiedad: "Avenida 68 # 40-15, Bogotá", areaM2: 600.00, estadoPropiedad: "Activa" }
+  ]}
+];
+
+const direcciones11a50 = [
+  ["Apartamento", "Calle 21 # 38-87, Bogotá"], ["Casa", "Carrera 22 # 41-14, Bogotá"], ["Apartamento", "Calle 23 # 44-21, Bogotá"],
+  ["Casa", "Calle 24 # 47-28, Bogotá"], ["Apartamento", "Carrera 25 # 50-35, Bogotá"], ["Local Comercial", "Calle 26 # 53-42, Bogotá"],
+  ["Bodega", "Calle 27 # 56-49, Bogotá"], ["Local Comercial", "Carrera 28 # 59-56, Bogotá"], ["Bodega", "Calle 29 # 62-63, Bogotá"],
+  ["Local Comercial", "Calle 30 # 5-70, Bogotá"], ["Apartamento", "Carrera 31 # 8-77, Bogotá"], ["Casa", "Calle 32 # 11-84, Bogotá"],
+  ["Apartamento", "Calle 33 # 14-11, Bogotá"], ["Casa", "Carrera 34 # 17-18, Bogotá"], ["Apartamento", "Calle 35 # 20-25, Bogotá"],
+  ["Local Comercial", "Calle 36 # 23-32, Bogotá"], ["Bodega", "Carrera 37 # 26-39, Bogotá"], ["Local Comercial", "Calle 38 # 29-46, Bogotá"],
+  ["Bodega", "Calle 39 # 32-53, Bogotá"], ["Local Comercial", "Carrera 40 # 35-60, Bogotá"], ["Apartamento", "Calle 41 # 38-67, Bogotá"],
+  ["Casa", "Calle 42 # 41-74, Bogotá"], ["Apartamento", "Carrera 43 # 44-81, Bogotá"], ["Casa", "Calle 44 # 47-88, Bogotá"],
+  ["Apartamento", "Calle 45 # 50-15, Bogotá"], ["Local Comercial", "Carrera 46 # 53-22, Bogotá"], ["Bodega", "Calle 47 # 56-29, Bogotá"],
+  ["Local Comercial", "Calle 48 # 59-36, Bogotá"], ["Bodega", "Carrera 49 # 62-43, Bogotá"], ["Local Comercial", "Calle 50 # 5-50, Bogotá"],
+  ["Apartamento", "Calle 51 # 8-57, Bogotá"], ["Casa", "Carrera 52 # 11-64, Bogotá"], ["Apartamento", "Calle 53 # 14-71, Bogotá"],
+  ["Casa", "Calle 54 # 17-78, Bogotá"], ["Apartamento", "Carrera 55 # 20-85, Bogotá"], ["Local Comercial", "Calle 56 # 23-12, Bogotá"],
+  ["Bodega", "Calle 57 # 26-19, Bogotá"], ["Local Comercial", "Carrera 58 # 29-26, Bogotá"], ["Bodega", "Calle 59 # 32-33, Bogotá"],
+  ["Local Comercial", "Calle 60 # 35-40, Bogotá"]
+];
+
+for (let i = 11; i <= 50; i++) {
+  const esEmpresa = (i >= 16 && i <= 20) || (i >= 26 && i <= 30) || (i >= 36 && i <= 40) || (i >= 46 && i <= 50);
+  const [tipoProp, dirProp] = direcciones11a50[i - 11];
+  clientesBase.push({
+    _id: i,
+    tipoDocumento: esEmpresa ? "NIT" : "CC",
+    numDocumento: esEmpresa ? `90000000${i}` : `10000000${i}`,
+    nombreCliente: esEmpresa ? `Empresa ${i}` : `Cliente ${i}`,
+    celularCliente: `30000000${i}`,
+    telefonoCliente: null,
+    correoCliente: esEmpresa ? `empresa${i}@gmail.com` : `cliente${i}@gmail.com`,
+    estadoCliente: "Activo",
+    propiedades: [{ idPropiedad: i, tipoPropiedad: tipoProp, direccionPropiedad: dirProp, areaM2: 100.00, estadoPropiedad: "Activa" }]
+  });
+}
+db.clientes.insertMany(clientesBase);
+
+// 3. INSUMOS QUÍMICOS
+db.insumos_quimicos.insertMany([
+  { _id: 1, nombreInsumo: "Deltametrina 2.5%", unidadMedida: "ml", stockActual: 20000.00, stockMinimo: 1000.00, precioListaActual: 45.00, estadoInsumo: "Disponible" },
+  { _id: 2, nombreInsumo: "Gel Cucarachicida Alfa", unidadMedida: "g", stockActual: 5000.00, stockMinimo: 200.00, precioListaActual: 120.00, estadoInsumo: "Disponible" },
+  { _id: 3, nombreInsumo: "Raticida Bloque Parafina", unidadMedida: "g", stockActual: 10000.00, stockMinimo: 500.00, precioListaActual: 35.00, estadoInsumo: "Disponible" },
+  { _id: 4, nombreInsumo: "Termiticida Líquido B", unidadMedida: "ml", stockActual: 8000.00, stockMinimo: 1000.00, precioListaActual: 90.00, estadoInsumo: "Disponible" },
+  { _id: 5, nombreInsumo: "Insecticida Rastrero C", unidadMedida: "ml", stockActual: 12000.00, stockMinimo: 800.00, precioListaActual: 40.00, estadoInsumo: "Disponible" }
+]);
+
+// 4. PLAGAS
+db.plagas.insertMany([
+  { _id: 1, nombrePlaga: "Cucaracha Germánica", tarifaPorM2: 2200.00, dosisEstandarPorM2: 5.00, idInsumoQuimico: 1 },
+  { _id: 2, nombrePlaga: "Roedor Doméstico", tarifaPorM2: 2500.00, dosisEstandarPorM2: 10.00, idInsumoQuimico: 3 },
+  { _id: 3, nombrePlaga: "Termita de Madera", tarifaPorM2: 3500.00, dosisEstandarPorM2: 8.00, idInsumoQuimico: 4 },
+  { _id: 4, nombrePlaga: "Insectos Rastreros Varios", tarifaPorM2: 1800.00, dosisEstandarPorM2: 4.00, idInsumoQuimico: 5 },
+  { _id: 5, nombrePlaga: "Hormiga de Jardín/Estructura", tarifaPorM2: 2200.00, dosisEstandarPorM2: 3.50, idInsumoQuimico: 2 }
+]);
+
+// 5. CITAS DE FUMIGACIÓN + SERVICIOS DIRECTOS + CERTIFICADOS + VISITAS DE COTIZACIÓN
+const horarios1a50 = [
+  "2026-10-01T08:00:00", "2026-10-01T10:00:00", "2026-10-01T14:00:00",
+  "2026-10-02T08:00:00", "2026-10-02T11:00:00", "2026-10-02T15:00:00",
+  "2026-10-03T08:00:00", "2026-10-03T10:00:00", "2026-10-03T14:00:00",
+  "2026-10-04T09:00:00", "2026-10-04T11:00:00", "2026-10-04T15:00:00",
+  "2026-10-05T08:00:00", "2026-10-05T10:00:00", "2026-10-05T14:00:00",
+  "2026-10-06T08:00:00", "2026-10-06T11:00:00", "2026-10-06T15:00:00",
+  "2026-10-07T08:00:00", "2026-10-07T10:00:00", "2026-10-07T14:00:00",
+  "2026-10-08T08:00:00", "2026-10-08T11:00:00", "2026-10-08T15:00:00",
+  "2026-10-09T08:00:00", "2026-10-09T10:00:00", "2026-10-09T14:00:00",
+  "2026-10-10T09:00:00", "2026-10-10T11:00:00", "2026-10-10T15:00:00",
+  "2026-10-11T08:00:00", "2026-10-11T10:00:00", "2026-10-11T14:00:00",
+  "2026-10-12T08:00:00", "2026-10-12T11:00:00", "2026-10-12T15:00:00",
+  "2026-10-13T08:00:00", "2026-10-13T10:00:00", "2026-10-13T14:00:00",
+  "2026-10-14T09:00:00", "2026-10-14T11:00:00", "2026-10-14T15:00:00",
+  "2026-10-15T08:00:00", "2026-10-15T10:00:00", "2026-10-15T14:00:00",
+  "2026-10-16T08:00:00", "2026-10-16T11:00:00", "2026-10-16T15:00:00",
+  "2026-10-17T08:00:00", "2026-10-17T10:00:00"
+];
+
+const citasDocs = [];
+for (let i = 1; i <= 50; i++) {
+  const fechaBase = horarios1a50[i - 1];
+  const fechaTrans = fechaBase.replace(":00:00", ":30:00");
+  const fechaDia = fechaBase.split("T")[0];
+  const fechaVenc = fechaDia.replace("2026-10-", "2027-04-");
+  const tokenNum = String(i).padStart(25, "0");
+
+  citasDocs.push({
+    _id: i,
+    fechaHora: new Date(fechaBase + "Z"),
+    estadoCita: "Realizado",
+    tipoSolicitud: "Servicio Directo",
+    duracionEstimadaMin: 60,
+    observaciones: "Servicio estándar",
+    idPropiedad: i,
+    idCliente: i,
+    idUsuario: 2,
+    servicioDirecto: {
+      idServicio: i,
+      costoTotal: 200000.00,
+      dosisInsumo: 500.00,
+      areaM2: 100.00,
+      estadoServicio: true,
+      fechaTransaccion: new Date(fechaTrans + "Z"),
+      detalleOperacion: "Servicio estándar en propiedad",
+      idPlaga: 1,
+      certificado: {
+        idCertificado: i,
+        fechaEmision: new Date(fechaDia + "T00:00:00Z"),
+        fechaVencimiento: new Date(fechaVenc + "T00:00:00Z"),
+        tokenEnlace: `TOKEN${tokenNum}`,
+        estadoVigencia: "Vigente"
+      }
+    }
+  });
+}
+
+citasDocs.push(
+  { _id: 51, fechaHora: new Date("2026-10-18T08:00:00Z"), estadoCita: "Realizado", tipoSolicitud: "Visita Cotización", duracionEstimadaMin: 60, observaciones: "Cotización local comercial", idPropiedad: 51, idCliente: 2, idUsuario: 2, visitaCotizacion: { idVisitaCotizacion: 1, valorServicio: 400000.00, areaMedidaM2: 200.00, estadoCotizacion: "Cotizada", observacionInspeccion: "Cucaracha en cocina y bodega" } },
+  { _id: 52, fechaHora: new Date("2026-10-18T10:00:00Z"), estadoCita: "Realizado", tipoSolicitud: "Visita Cotización", duracionEstimadaMin: 60, observaciones: "Cotización panadería", idPropiedad: 52, idCliente: 5, idUsuario: 6, visitaCotizacion: { idVisitaCotizacion: 2, valorServicio: 350000.00, areaMedidaM2: 175.00, estadoCotizacion: "Cotizada", observacionInspeccion: "Cucaracha en zona de hornos" } },
+  { _id: 53, fechaHora: new Date("2026-10-18T14:00:00Z"), estadoCita: "Realizado", tipoSolicitud: "Visita Cotización", duracionEstimadaMin: 60, observaciones: "Cotización hotel", idPropiedad: 53, idCliente: 7, idUsuario: 2, visitaCotizacion: { idVisitaCotizacion: 3, valorServicio: 900000.00, areaMedidaM2: 450.00, estadoCotizacion: "Cotizada", observacionInspeccion: "Cucaracha en cocina y habitaciones" } },
+  { _id: 54, fechaHora: new Date("2026-10-19T09:00:00Z"), estadoCita: "Realizado", tipoSolicitud: "Visita Cotización", duracionEstimadaMin: 60, observaciones: "Cotización colegio", idPropiedad: 54, idCliente: 10, idUsuario: 6, visitaCotizacion: { idVisitaCotizacion: 4, valorServicio: 1200000.00, areaMedidaM2: 600.00, estadoCotizacion: "Cotizada", observacionInspeccion: "Cucaracha en cafetería y salones" } },
+  { _id: 55, fechaHora: new Date("2026-10-19T11:00:00Z"), estadoCita: "Realizado", tipoSolicitud: "Visita Cotización", duracionEstimadaMin: 60, observaciones: "Cotización casa", idPropiedad: 55, idCliente: 3, idUsuario: 2, visitaCotizacion: { idVisitaCotizacion: 5, valorServicio: 160000.00, areaMedidaM2: 80.00, estadoCotizacion: "Cotizada", observacionInspeccion: "Cucaracha en cocina" } },
+  { _id: 56, fechaHora: new Date("2026-11-25T09:00:00Z"), estadoCita: "En Camino", tipoSolicitud: "Visita Cotización", duracionEstimadaMin: 60, observaciones: "Cliente reporta roedores", idPropiedad: 4, idCliente: 4, idUsuario: 2, visitaCotizacion: { idVisitaCotizacion: 6, valorServicio: 0.00, areaMedidaM2: null, estadoCotizacion: "Por inspeccionar", observacionInspeccion: null } },
+  { _id: 57, fechaHora: new Date("2026-11-26T15:00:00Z"), estadoCita: "Pendiente", tipoSolicitud: "Servicio Directo", duracionEstimadaMin: 60, observaciones: "Refuerzo de fumigación", idPropiedad: 1, idCliente: 1, idUsuario: 6 }
+);
+db.citas_fumigacion.insertMany(citasDocs);
+
+// 6. AJUSTES DE INVENTARIO
+const ajustesDocs = [
+  { _id: 1, fechaAjuste: new Date("2026-09-05T00:00:00Z"), tipoAjuste: "Compra Recibida", cantidad: 5000.00, justificacion: "Ingreso orden de compra #1", detalleAjuste: "Ingreso mensual", idInsumoQuimico: 1 },
+  { _id: 2, fechaAjuste: new Date("2026-09-12T00:00:00Z"), tipoAjuste: "Compra Recibida", cantidad: 4000.00, justificacion: "Ingreso orden de compra #2", detalleAjuste: "Ingreso mensual", idInsumoQuimico: 3 },
+  { _id: 3, fechaAjuste: new Date("2026-09-28T00:00:00Z"), tipoAjuste: "Merma", cantidad: 150.00, justificacion: "Derrame durante almacenamiento", detalleAjuste: "Envase dañado", idInsumoQuimico: 4 },
+  { _id: 4, fechaAjuste: new Date("2026-10-03T00:00:00Z"), tipoAjuste: "Salida", cantidad: 300.00, justificacion: "Préstamo de insumo a bodega auxiliar", detalleAjuste: "Traslado interno", idInsumoQuimico: 2 },
+  { _id: 5, fechaAjuste: new Date("2026-10-10T00:00:00Z"), tipoAjuste: "Entrada", cantidad: 200.00, justificacion: "Devolución de sobrante de servicio", detalleAjuste: "Sobrante sin usar", idInsumoQuimico: 5 }
+];
+for (let i = 1; i <= 50; i++) {
+  const fechaDia = horarios1a50[i - 1].split("T")[0];
+  ajustesDocs.push({
+    _id: 5 + i,
+    fechaAjuste: new Date(fechaDia + "T00:00:00Z"),
+    tipoAjuste: "Consumo Servicio",
+    cantidad: 500.00,
+    justificacion: `Descuento por servicio #${i}`,
+    detalleAjuste: "Plaga tratada: Cucaracha Germánica",
+    idInsumoQuimico: 1
+  });
+}
+db.ajustes_inventario.insertMany(ajustesDocs);
+
+// 7. PROVEEDORES
+db.proveedores.insertMany([
+  { _id: 1, nit: "900111222-1", razonSocial: "Químicos Andinos S.A.S.", telefonoProveedor: "6012345678", correoProveedor: "ventas@quimicosandinos.com", ciudadProveedor: "Bogotá", estadoProveedor: "Activo" },
+  { _id: 2, nit: "900333444-5", razonSocial: "Agroinsumos de Colombia S.A.S.", telefonoProveedor: "6045551234", correoProveedor: "pedidos@agroinsumos.co", ciudadProveedor: "Medellín", estadoProveedor: "Activo" },
+  { _id: 3, nit: "900555666-9", razonSocial: "Plagax Ltda.", telefonoProveedor: "6026667788", correoProveedor: "comercial@plagax.com", ciudadProveedor: "Cali", estadoProveedor: "Activo" },
+  { _id: 4, nit: "900777888-2", razonSocial: "Distrifumi S.A.S.", telefonoProveedor: "6013334455", correoProveedor: "contacto@distrifumi.com", ciudadProveedor: "Bogotá", estadoProveedor: "Activo" },
+  { _id: 5, nit: "900999000-4", razonSocial: "Químicos del Caribe Ltda.", telefonoProveedor: "6057778899", correoProveedor: "info@quimicosdelcaribe.com", ciudadProveedor: "Barranquilla", estadoProveedor: "Inactivo" }
+]);
+
+// 8. ÓRDENES DE COMPRA + DETALLES INCRUSTADOS
+db.ordenes_compra.insertMany([
+  { _id: 1, fechaCompra: new Date("2026-09-05T00:00:00Z"), valorTotal: 308000.00, estadoCompra: "Recibida", detalleCompra: "Reposición mensual de insecticidas", idProveedor: 1, detalles: [
+    { idDetalle: 1, idInsumoQuimico: 1, cantidad: 5000.00, precioUnitario: 40.00 },
+    { idDetalle: 2, idInsumoQuimico: 5, cantidad: 3000.00, precioUnitario: 36.00 }
+  ]},
+  { _id: 2, fechaCompra: new Date("2026-09-12T00:00:00Z"), valorTotal: 196000.00, estadoCompra: "Recibida", detalleCompra: "Compra de raticida", idProveedor: 2, detalles: [
+    { idDetalle: 3, idInsumoQuimico: 3, cantidad: 4000.00, precioUnitario: 30.00 },
+    { idDetalle: 4, idInsumoQuimico: 5, cantidad: 2000.00, precioUnitario: 38.00 }
+  ]},
+  { _id: 3, fechaCompra: new Date("2026-09-20T00:00:00Z"), valorTotal: 152100.00, estadoCompra: "Recibida", detalleCompra: "Pedido urgente con 10% de descuento aplicado", idProveedor: 1, detalles: [
+    { idDetalle: 5, idInsumoQuimico: 4, cantidad: 1000.00, precioUnitario: 76.50 },
+    { idDetalle: 6, idInsumoQuimico: 1, cantidad: 2000.00, precioUnitario: 37.80 }
+  ]},
+  { _id: 4, fechaCompra: new Date("2026-10-02T00:00:00Z"), valorTotal: 253000.00, estadoCompra: "Recibida", detalleCompra: "Reposición de geles", idProveedor: 4, detalles: [
+    { idDetalle: 7, idInsumoQuimico: 2, cantidad: 1500.00, precioUnitario: 110.00 },
+    { idDetalle: 8, idInsumoQuimico: 4, cantidad: 1000.00, precioUnitario: 88.00 }
+  ]},
+  { _id: 5, fechaCompra: new Date("2026-10-20T00:00:00Z"), valorTotal: 255000.00, estadoCompra: "Pendiente", detalleCompra: "Compra de termiticida", idProveedor: 3, detalles: [
+    { idDetalle: 9, idInsumoQuimico: 4, cantidad: 3000.00, precioUnitario: 85.00 }
+  ]},
+  { _id: 6, fechaCompra: new Date("2026-11-02T00:00:00Z"), valorTotal: 95000.00, estadoCompra: "Pendiente", detalleCompra: "Compra de insecticida rastrero", idProveedor: 4, detalles: [
+    { idDetalle: 10, idInsumoQuimico: 5, cantidad: 2500.00, precioUnitario: 38.00 }
+  ]}
+]);
+
+// 9. AUDITORÍAS
+db.auditorias.insertMany([
+  { modulo: "Clientes", idRegistro: 1, accion: "ACTUALIZAR", valorAnterior: "celular=3101234567", valorNuevo: "celular=3209998877", fechaEvento: new Date(), idUsuario: 1 },
+  { modulo: "Inventario", idRegistro: 1, accion: "CAMBIO_STOCK", valorAnterior: "stock=15000.00", valorNuevo: "stock=20000.00", fechaEvento: new Date(), idUsuario: 1 },
+  { modulo: "Compras", idRegistro: 3, accion: "ACTUALIZAR", valorAnterior: "valor=169000.00", valorNuevo: "valor=152100.00", fechaEvento: new Date(), idUsuario: 1 },
+  { modulo: "Compras", idRegistro: 6, accion: "ACTUALIZAR", valorAnterior: "valor=200000.00", valorNuevo: "valor=95000.00", fechaEvento: new Date(), idUsuario: 1 }
+]);
+
+// VISTAS
+db.createView("Vista_ResumenServicios", "citas_fumigacion", [
+  { $match: { "servicioDirecto": { $exists: true } } },
+  { $lookup: { from: "clientes", localField: "idCliente", foreignField: "_id", as: "cli" } },
+  { $unwind: "$cli" },
+  { $lookup: { from: "plagas", localField: "servicioDirecto.idPlaga", foreignField: "_id", as: "plaga" } },
+  { $unwind: "$plaga" },
+  { $project: { _id: 0, idServicio: "$servicioDirecto.idServicio", nombreCliente: "$cli.nombreCliente", celularCliente: "$cli.celularCliente", nombrePlaga: "$plaga.nombrePlaga", costoTotal: "$servicioDirecto.costoTotal", tokenEnlace: "$servicioDirecto.certificado.tokenEnlace", estadoVigencia: "$servicioDirecto.certificado.estadoVigencia" } }
+]);
+
+db.createView("Vista_AlertasInventario", "insumos_quimicos", [
+  { $match: { $expr: { $lte: ["$stockActual", "$stockMinimo"] } } },
+  { $addFields: { alerta: { $cond: [{ $eq: ["$stockActual", 0] }, "AGOTADO", "STOCK BAJO"] } } }
+]);
+
+db.createView("Vista_AgendaVisitas", "citas_fumigacion", [
+  { $match: { tipoSolicitud: "Visita Cotización" } },
+  { $lookup: { from: "clientes", localField: "idCliente", foreignField: "_id", as: "cli" } },
+  { $unwind: "$cli" },
+  { $lookup: { from: "usuarios", localField: "idUsuario", foreignField: "_id", as: "tec" } },
+  { $unwind: "$tec" },
+  { $project: { _id: 0, idCita: "$_id", fechaHora: 1, estadoCita: 1, nombreCliente: "$cli.nombreCliente", tecnicoAsignado: "$tec.nombreUsuario", areaMedidaM2: "$visitaCotizacion.areaMedidaM2", valorServicio: "$visitaCotizacion.valorServicio", estadoCotizacion: "$visitaCotizacion.estadoCotizacion" } }
+]);
+
+db.createView("Vista_Auditoria", "auditorias", [
+  { $lookup: { from: "usuarios", localField: "idUsuario", foreignField: "_id", as: "usr" } },
+  { $unwind: "$usr" },
+  { $project: { _id: 0, modulo: 1, idRegistro: 1, accion: 1, valorAnterior: 1, valorNuevo: 1, fechaEvento: 1, nombreUsuario: "$usr.nombreUsuario" } }
+]);
